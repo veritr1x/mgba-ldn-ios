@@ -1,3 +1,19 @@
+# iOS / Mac LDN Relay preview
+
+This personal, AI-assisted fork adds a UIKit GBA player and Bluetooth client
+for [LDN Relay](https://github.com/veritr1x/ldn-relay). It uses a modified Switch
+to join a stock Switch 2's FireRed/LeafGreen local-wireless session.
+
+**Experimental: ROM playback, native LDN join, Pia authentication and game RFU
+acceptance have been observed on a Mac. A complete trade has not succeeded.**
+The iOS app builds; physical iOS gameplay remains unverified.
+
+[Build instructions, setup and current limits](src/platform/ios-ldn/README.md).
+This Apple relay route does not need the USB/ESP32 setup or `prod.keys` described
+in the original upstream instructions below. Upstream licences and notices apply.
+
+---
+
 # Important!!!
 
 ### Note from GSD:

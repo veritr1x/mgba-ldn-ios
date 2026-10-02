@@ -40,7 +40,7 @@ static uint16_t _nextPktid(struct PiaPktids* ids, uint16_t dst) {
 struct IOSRelay {
 	struct GBASIORFUBackend d;
 	struct GBASIORFU *rfu;
-    bool labMode, labHost, labAdvertising, nativeHostEnabled, nativeHost;
+    bool labMode, labHost, labAdvertising, nativeHostEnabled, nativeHost, giftHost;
     bool nativeAcceptPending, nativeConnectSeen, nativeConnectAcked;
     uint16_t nativeConnectNext;
     uint8_t labSSID[16], labNextSlot;
@@ -536,7 +536,7 @@ static bool _piaSendMessage(struct IOSRelay* broadcast, const struct LdnPiaOutMe
 /* Enqueue already translated native frames, including synthetic extra-barrier
  * answers. Keeping this separate prevents translating their counters twice. */
 static void _queueLabData(struct IOSRelay *broadcast,const uint8_t *data,size_t length){
-    if(broadcast->nativeHost && broadcast->piaOutCount){
+    if(broadcast->nativeHost && !broadcast->giftHost && broadcast->piaOutCount){
         unsigned tail=(broadcast->piaOutHead+broadcast->piaOutCount-1)%64;
         if(broadcast->piaOut[tail].length==length && !memcmp(broadcast->piaOut[tail].data,data,length)){
             ++broadcast->nativeRfuCoalesced;return;
@@ -553,7 +553,7 @@ static void _sendData(struct GBASIORFUBackend* backend, const uint8_t* data, siz
     if(broadcast->labMode){
         if(!broadcast->piaAccepted || !length || length>RFU_PACKET_MAX)return;
         uint8_t mapped[RFU_PACKET_MAX];memcpy(mapped,data,length);
-        if(broadcast->nativeHost){
+        if(broadcast->nativeHost && !broadcast->giftHost){
             unsigned before=broadcast->hostTrade.fakeCount;
             if(!HostTradeParent(&broadcast->hostTrade,mapped,length)){
                 broadcast->failed=true;broadcast->log(broadcast->user,"Native trade synchronization failed: cannot map save barrier");return;

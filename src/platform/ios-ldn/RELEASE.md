@@ -17,3 +17,5 @@ Diagnostics and private trade capture are off by default. Includes upstream `9e7
 [Setup and controls](https://github.com/veritr1x/mgba-ldn-ios-macos/blob/ios-relay/src/platform/ios-ldn/README.md).
 
 Multiple trades were reported working on the preceding 0.5.0 build. These downloads are a preview: automated tests and builds do not substitute for a fresh release-build console trade or a sideloading check on another Apple account.
+
+Wonder Card gifts: all 76 cards from GB-Link’s pinned catalogue, plus `.wc3` import. Use the game menu to open the gift sender; no ROM is needed. This adapter has local protocol coverage only; physical-console gift delivery, saving and redemption are not yet verified. GB-Link, Project Wonder and original card authors are credited in the app and bundled notices. Combined Apple builds include GPL/AGPL code and corresponding source references.

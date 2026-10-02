@@ -22,12 +22,19 @@ the same relay; console trade verification is pending. One guest is supported.
 
 Based on [Gr3nSkyDragon/mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)
 and [mGBA](https://github.com/mgba-emu/mgba). Their code, credits and licences
-remain intact. The Apple relay route does not need `prod.keys` or an ESP32.
+remain intact. Wonder Card gifts use the catalogue and protocol from
+[GB-Link](https://github.com/GB-Link/GB-Link-Switch-LDN), with its original
+contributors credited in the app and source. The Apple relay route does not need `prod.keys` or an ESP32.
 The original upstream instructions below describe other platforms.
 
 The player has Android-style touch controls, display effects and custom backgrounds.
 Open **☰ → Display settings** to customize it. [Android feature comparison](src/platform/ios-ldn/ANDROID_PARITY.md).
 
+## Wonder Card gifts
+
+Open **Wonder Card gifts** in the game menu to choose from GB-Link’s 76 bundled cards or import a `.wc3`. Connect LDN Relay, then tap **Start gift**. On the receiving Switch, choose **Mystery Gift → Wonder Cards → Friend → GBLINK**. No ROM is needed in the app. Keep it visible until the console finishes saving.
+
+This new adapter is locally tested only; console delivery still needs verification. Cards retain their original game-version restrictions. [Instructions, compatibility and GB-Link credits](src/platform/ios-ldn/gifts/README.md). Apple builds with this feature include GPL/AGPL code and its source/licence notices.
 ---
 
 # Important!!!

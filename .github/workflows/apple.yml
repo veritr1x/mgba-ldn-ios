@@ -30,6 +30,7 @@ jobs:
         run: |
           command -v cmake || brew install cmake
           command -v ninja || brew install ninja
+          command -v node || brew install node
       - name: Build iOS app for sideloading
         run: python3 src/platform/ios-ldn/build.py --platform ios
       - name: Test game protocol, notification recovery and saves
@@ -38,6 +39,7 @@ jobs:
           python3 src/platform/ios-ldn/tools/test_notification.py
           python3 src/platform/ios-ldn/tools/test_game_files.py
           python3 src/platform/ios-ldn/tools/test_player.py
+          python3 src/platform/ios-ldn/tools/test_gifts.py
           python3 -m unittest discover -s src/platform/ios-ldn/tools -p 'test_*checks.py'
       - name: Build Mac app
         run: python3 src/platform/ios-ldn/build.py --platform mac --skip-core

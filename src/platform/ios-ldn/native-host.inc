@@ -1,4 +1,7 @@
 #include "native-host.h"
+void IOSRelaySetGiftHost(struct GBASIORFUBackend *backend,bool enabled){
+    struct IOSRelay *b=(struct IOSRelay *)backend;if(b)b->giftHost=enabled;
+}
 void IOSRelayEnableNativeHost(struct GBASIORFUBackend *backend,bool enabled){
     struct IOSRelay *b=(struct IOSRelay *)backend;if(b)b->nativeHostEnabled=enabled;
 }

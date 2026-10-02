@@ -23,6 +23,8 @@ bool IOSRelayConfigureLab(struct GBASIORFUBackend *, const uint8_t *, size_t, bo
 void IOSRelayUpdateLabAdvertisement(struct GBASIORFUBackend *, const uint8_t *, size_t);
 /* Native LDN AP is owned by the relay; host Pia/RFU runs on the emulator thread. */
 void IOSRelayEnableNativeHost(struct GBASIORFUBackend *, bool enabled);
+/* Gift scripts already speak the Switch protocol; do not apply trade/save shims. */
+void IOSRelaySetGiftHost(struct GBASIORFUBackend *, bool enabled);
 bool IOSRelayNativeAdvertisement(struct GBASIORFUBackend *, uint8_t out[122]);
 bool IOSRelayConfigureNativeHost(struct GBASIORFUBackend *, const uint8_t *, size_t, uint32_t now);
 #endif

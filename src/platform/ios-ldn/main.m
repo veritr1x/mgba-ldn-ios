@@ -12,6 +12,7 @@
 #include <mgba/internal/gba/sio/rfu-wrapper-air.h>
 #import <GameController/GameController.h>
 #include "relay-backend.h"
+#import "GiftController.h"
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
 #include <mgba/gba/interface.h>
@@ -45,6 +46,7 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
     _Atomic(uint32_t) _readAudio, _writeAudio;
 }
 @property(nonatomic,strong) RelayController *relay;
+@property(nonatomic,strong) GiftController *gifts;
 @property(nonatomic,strong) UIImageView *screen;
 @property(nonatomic,strong) PlayerView *player;
 @property(nonatomic,strong) UIButton *menuButton;
@@ -207,9 +209,21 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     }return keys;
 }
 - (NSArray<UIMenuElement *> *)menuActions {
-    NSArray *titles=@[@"Open game",@"Import save",@"Export save",_paused?@"Resume":@"Pause",@"Reset game",@"Switch multiplayer",@"Wireless adapter",@"Display settings",@"Export diagnostic log",@"About"];
-    NSArray *selectors=@[@"openGame",@"importSave",@"exportSave",@"togglePause",@"resetGame",@"showMultiplayer",@"showWirelessAdapter",@"showDisplaySettings",@"exportDiagnostics",@"showAbout"];
+    NSArray *titles=@[@"Open game",@"Import save",@"Export save",_paused?@"Resume":@"Pause",@"Reset game",@"Switch multiplayer",@"Wonder Card gifts",@"Wireless adapter",@"Display settings",@"Export diagnostic log",@"About"];
+    NSArray *selectors=@[@"openGame",@"importSave",@"exportSave",@"togglePause",@"resetGame",@"showMultiplayer",@"showGifts",@"showWirelessAdapter",@"showDisplaySettings",@"exportDiagnostics",@"showAbout"];
     NSMutableArray *actions=[NSMutableArray new];for(NSUInteger i=0;i<titles.count;i++){NSString *sel=selectors[i];UIAction *action=[UIAction actionWithTitle:titles[i] image:nil identifier:nil handler:^(UIAction *a){[UIApplication.sharedApplication sendAction:NSSelectorFromString(sel) to:self from:nil forEvent:nil];}];if(!_core && i>=1 && i<=4)action.attributes=UIMenuElementAttributesDisabled;[actions addObject:action];}return actions;
+}
+- (void)showGifts {
+    if(self.relay.sessionActive){[self record:@"Disconnect or cancel multiplayer before opening Wonder Cards."];return;}
+    if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]){[self record:@"Use the standard app for Wonder Cards, not the emulator host lab."];return;}
+    if(_core && !_paused)[self togglePause];
+    [self clearInput];[self.relay loadViewIfNeeded];
+    NSData *(^provider)(void)=[self.relay.nativeAdvertisementProvider copy];
+    NSString *instructions=self.relay.gameInstructions;BOOL joinOnly=self.relay.joinOnly;
+    GiftController *gifts=[[GiftController alloc] initWithStyle:UITableViewStyleInsetGrouped];gifts.relay=self.relay;self.gifts=gifts;
+    __weak GameController *weak=self;
+    gifts.finished=^{GameController *g=weak;g.relay.nativeAdvertisementProvider=provider;g.relay.gameInstructions=instructions;g.relay.joinOnly=joinOnly;[g dismissViewControllerAnimated:YES completion:^{g.gifts=nil;}];};
+    UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:gifts];nav.modalPresentationStyle=UIModalPresentationFullScreen;[self presentViewController:nav animated:YES completion:nil];
 }
 - (void)resetGame {
     if(self.relay.joined){[self record:@"Disconnect multiplayer before resetting the game."];return;}
@@ -239,7 +253,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     [self presentViewController:[[UIDocumentPickerViewController alloc] initForExportingURLs:@[url] asCopy:YES] animated:YES completion:nil];
 }
 - (void)showAbout {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"mGBA LDN" message:@"Apple frontend by veritr1x. Based on mGBA and Gr3nSkyDragon's mGBA LDN, with controls and display options adapted from its Android frontend.\n\nSwitch multiplayer uses LDN Relay with approval on the modified Switch. FireRed / LeafGreen, Emerald, and Ruby/Sapphire via the cable wrapper. One guest; new game paths need console testing.\n\nKeyboard: arrows, Z = A, X = B, Return = Start, right Shift = Select, A = L, S = R.\nGamepad: east = A, south = B, shoulders = L/R, Menu = Start, Options = Select.\n\nSource and licenses are included in the download. No games are bundled." preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"mGBA LDN" message:@"Apple frontend by veritr1x. Wonder Card catalogue and gift protocol from the open-source GB-Link project, including Project Wonder by Goppier and the original card authors. No endorsement is implied.\n\nBased on mGBA and Gr3nSkyDragon's mGBA LDN, with controls and display options adapted from its Android frontend.\n\nSwitch multiplayer uses LDN Relay with approval on the modified Switch. FireRed / LeafGreen, Emerald, and Ruby/Sapphire via the cable wrapper. One guest; new game paths need console testing.\n\nKeyboard: arrows, Z = A, X = B, Return = Start, right Shift = Select, A = L, S = R.\nGamepad: east = A, south = B, shoulders = L/R, Menu = Start, Options = Select.\n\nSource and licenses are included in the download. No games are bundled." preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];
 }
 - (void)startAudio {
     NSError *error=nil;
@@ -422,6 +436,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 }
 - (void)active:(NSNotification *)note { /* User resumes explicitly; never silently resume a stale multiplayer session. */ }
 - (void)bound:(NSNotification *)note {
+    if(self.gifts)return;
     NSData *metadata=note.userInfo[@"metadata"];
     if(self.captureLogger){
         if(self.captureSession){[self capture:@{@"event":@"session_end",@"trade_success":@"unverified"}];self.captureSession=NO;}
@@ -433,10 +448,11 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         [self.relay leave];
     }
 }
-- (void)hostMembers:(NSNotification *)note {NSData *m=note.userInfo[@"metadata"];if(_backend && !IOSRelayConfigureNativeHost(_backend,m.bytes,m.length,monotonicMs())){[self record:@"Native host peer metadata rejected; leaving room."];[self.relay leave];}}
+- (void)hostMembers:(NSNotification *)note {if(self.gifts)return;NSData *m=note.userInfo[@"metadata"];if(_backend && !IOSRelayConfigureNativeHost(_backend,m.bytes,m.length,monotonicMs())){[self record:@"Native host peer metadata rejected; leaving room."];[self.relay leave];}}
 - (void)labAdvertisement:(NSNotification *)note {NSData *m=note.userInfo[@"metadata"];if(_backend)IOSRelayUpdateLabAdvertisement(_backend,m.bytes,m.length);}
-- (void)lost:(NSNotification *)note { IOSRelayStop(_backend);if(self.captureSession){[self capture:@{@"event":@"session_end",@"trade_success":@"unverified"}];self.captureSession=NO;[self.captureLogger flushSynchronously];} }
+- (void)lost:(NSNotification *)note { if(self.gifts)return;IOSRelayStop(_backend);if(self.captureSession){[self capture:@{@"event":@"session_end",@"trade_success":@"unverified"}];self.captureSession=NO;[self.captureLogger flushSynchronously];} }
 - (void)datagram:(NSNotification *)note {
+    if(self.gifts)return;
     if(!_backend || _paused || [note.userInfo[@"slot"] unsignedIntValue]!=0 || [note.userInfo[@"port"] unsignedIntValue]!=12345) return;
     NSData *ip=note.userInfo[@"source"],*data=note.userInfo[@"payload"];
     if(ip.length==4){[self capture:@{@"event":@"datagram",@"direction":@"rx",@"ip_b64":[ip base64EncodedStringWithOptions:0],@"port":@12345,@"payload_b64":[data base64EncodedStringWithOptions:0],@"length":@(data.length)}];IOSRelayReceive(_backend,ip.bytes,data.bytes,data.length);}

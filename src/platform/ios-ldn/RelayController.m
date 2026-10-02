@@ -20,6 +20,7 @@ static NSString *const FRLGKey = @"fcb6f6adb9dfea66aca9c326149d2b3b08a781895cbf7
 @property(nonatomic,strong) LabCentral *labCentral;
 @property(nonatomic) BOOL labSession;
 @property(nonatomic) BOOL nativeHosting, hostSupported;
+@property(nonatomic) BOOL giftStopRequested;
 @property(nonatomic,strong) NSData *nativeAdvertisement;
 @property(nonatomic,strong) UIButton *hostButton;
 @property(nonatomic) uint16_t advertisementRequest;
@@ -110,8 +111,10 @@ static NSData *hexData(NSString *text) {
     for (UIView *view in self.sessionList.arrangedSubviews) { [self.sessionList removeArrangedSubview:view];[view removeFromSuperview]; }
 }
 - (void)updateControls {
-    BOOL available=self.ready && !self.sessionBusy;
-    self.scanButton.enabled=available && !self.joined && !self.nativeHosting;
+    BOOL available=self.ready && !self.sessionBusy && !self.giftStopRequested;
+    self.scanButton.enabled=available && !self.joined && !self.nativeHosting && !self.giftMode;
+    self.scanButton.hidden=self.giftMode;
+    self.hostButton.hidden=self.giftMode;
     self.hostButton.enabled=available && !self.joined && self.hostSupported && !self.joinOnly;
     [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
     self.leaveButton.enabled=available && self.joined;
@@ -187,12 +190,15 @@ static NSData *hexData(NSString *text) {
 }
 - (void)setGameInstructions:(NSString *)text {_gameInstructions=[text copy];self.instructionsLabel.text=text;}
 - (void)setJoinOnly:(BOOL)value {_joinOnly=value;[self updateControls];}
+- (BOOL)sessionActive {return self.joined || self.nativeHosting || self.sessionBusy || self.giftStopRequested;}
+- (void)setGiftMode:(BOOL)value {_giftMode=value;[self updateControls];}
 - (void)toggleDetails:(UIButton *)button {
     self.events.hidden=!self.events.hidden;[button setTitle:self.events.hidden?@"Show connection details":@"Hide connection details" forState:UIControlStateNormal];
 }
 - (void)loadFRLG { self.protocolControl.selectedSegmentIndex=1;self.keyField.text=FRLGKey;self.portField.text=@"12345"; }
 - (void)resetLink {
     [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayLost" object:self];
+    self.giftStopRequested=NO;
     self.nativeHosting=NO;self.hostSupported=NO;self.nativeAdvertisement=nil;self.advertisementRequest=0;self.labSession=NO;self.ready=NO;self.joined=NO;self.nonce=0;self.centralID=nil;self.handshakeReply=NO;
     self.notificationsActive=NO;self.notifyCentral=nil;self.pendingNotification=nil;
     self.status.text=@"Waiting for the Switch · press A to reconnect and approve";
@@ -216,6 +222,17 @@ static NSData *hexData(NSString *text) {
     [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
     [self record:self.status.text];[self tick];
 }
+- (BOOL)beginGiftHosting {
+    if(!self.ready || self.sessionActive || !self.hostSupported)return NO;
+    self.nativeHosting=YES;[self publishHostAdvertisement];
+    if(!self.sessionBusy)self.nativeHosting=NO;
+    return self.sessionBusy;
+}
+- (void)cancelGiftHosting {
+    if(!self.sessionActive)return;
+    self.giftStopRequested=YES;
+    if(!self.sessionBusy)[self leave];
+}
 - (void)publishHostAdvertisement {
     if(!self.nativeHosting || !self.ready || self.sessionBusy || self.advertisementRequest)return;
     NSData *ad=self.nativeAdvertisementProvider?self.nativeAdvertisementProvider():nil;
@@ -235,12 +252,13 @@ static NSData *hexData(NSString *text) {
 }
 - (void)gameReady {
     self.sessionBusy=NO;self.udpReady=YES;
+    if(self.giftStopRequested){[self leave];return;}
     self.status.text=self.nativeHosting?@"Room ready · choose Join Group on the other console":@"Connected · tap Play and use your game’s Trade Center";
     [self record:self.status.text];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayBound" object:self userInfo:@{@"metadata":self.networkInfo,@"nativeHost":@(self.nativeHosting)}];
 }
 - (void)scan {
-    if(self.nativeHosting)return;
+    if(self.nativeHosting || self.giftMode || self.giftStopRequested)return;
     [self.view endEditing:YES];if (!self.ready || self.sessionBusy || self.joined) return;
     uint8_t proto=self.protocolControl.selectedSegmentIndex==0?1:3;
     self.sessionRequest=[self send:RL_SCAN body:[NSData dataWithBytes:&proto length:1]];
@@ -290,7 +308,9 @@ static NSData *hexData(NSString *text) {
     if (self.nonce && now-self.lastContact>30) { [self record:@"Bluetooth link idle for 30 seconds. Press A on the Switch to reconnect."];[self resetLink];self.status.text=@"Waiting for the Switch"; }
     if (self.pingExpected && now-self.pingStarted>180) { self.pingExpected=nil;[self record:@"BLE test timed out; delivery not verified."]; }
     if (self.udpExpected && now-self.udpStarted>180) { self.udpExpected=nil;[self record:@"UDP loopback timed out; delivery not verified."]; }
-    [self publishHostAdvertisement];[self updateControls];
+    if(self.giftStopRequested){if(!self.sessionBusy)[self leave];}
+    else [self publishHostAdvertisement];
+    [self updateControls];
 }
 - (BOOL)receiveMessage:(const uint8_t *)p size:(size_t)n {
     if (n<3) return YES;
@@ -356,24 +376,30 @@ static NSData *hexData(NSString *text) {
         }
         if((p[0]==RL_HOSTED)!=self.nativeHosting){[self record:@"Unexpected host/join role response"];return YES;}
         self.networkInfo=[NSData dataWithBytes:p length:n];self.joined=YES;[self clearSessions];
+        if(self.giftStopRequested){self.sessionBusy=NO;[self leave];return YES;}
         self.status.text=self.nativeHosting?@"Room created · preparing multiplayer":@"Joined · preparing multiplayer";
         [self record:[NSString stringWithFormat:@"LDN joined: protocol=%u nodes=%u metadata=%lu bytes",p[3],nodes,(unsigned long)n]];
         uint8_t body[3]={0,(uint8_t)(self.activePort>>8),(uint8_t)self.activePort};self.sessionRequest=[self send:RL_BIND body:[NSData dataWithBytes:body length:3]];
-        self.sessionBusy=self.sessionRequest!=0;[self updateControls];return YES;
+        self.sessionBusy=self.sessionRequest!=0;
+        if(!self.sessionRequest && self.giftMode)[NSNotificationCenter.defaultCenter postNotificationName:@"LDNRelayError" object:self userInfo:@{@"message":@"The relay command queue is full. Wait for the room to close, then try again."}];
+        [self updateControls];return YES;
     }
     case RL_LEFT:
         [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayLost" object:self];
         if (n!=3) break;
+        self.giftStopRequested=NO;
         self.nativeHosting=NO;self.nativeAdvertisement=nil;self.advertisementRequest=0;[self.hostButton setTitle:@"Host game" forState:UIControlStateNormal];self.joined=NO;self.sessionBusy=NO;self.udpReady=NO;self.networkInfo=nil;self.udpExpected=nil;self.status.text=@"Session left · relay remains connected";
         self.traffic.text=@"No session joined";[self record:@"LDN session closed."];[self updateControls];return YES;
     case RL_BOUND:
         if (n!=6) break;
         [self record:[NSString stringWithFormat:@"UDP bound: slot=%u port=%u",p[3],(p[4]<<8)|p[5]]];
         if (p[3]==0) {
+            if(self.giftStopRequested){self.sessionBusy=NO;[self leave];return YES;}
             if(![[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"] isEqual:@"usb"]){
                 uint8_t interval[2];lr_put16(interval,6);
                 self.sessionBusy=YES;self.status.text=@"Preparing Bluetooth connection…";
-                [self send:OW_PARAM body:[NSData dataWithBytes:interval length:2]];
+                self.sessionRequest=[self send:OW_PARAM body:[NSData dataWithBytes:interval length:2]];
+                if(!self.sessionRequest && self.giftMode){self.sessionBusy=NO;[NSNotificationCenter.defaultCenter postNotificationName:@"LDNRelayError" object:self userInfo:@{@"message":@"Could not prepare Bluetooth. Wait for the room to close, then reconnect."}];}
             }else{
                 [self gameReady];
             }
@@ -388,7 +414,7 @@ static NSData *hexData(NSString *text) {
         if(n!=9 || !self.joined)break;
         [self record:[NSString stringWithFormat:@"BLE interval request=%u result=0x%08x (actual interval unverified)",lr_get16(p+3),lr_get32(p+5)]];
         self.sessionBusy=NO;
-        if(lr_get32(p+5)){self.status.text=@"Bluetooth setup failed · reconnect the relay";[self updateControls];return YES;}
+        if(lr_get32(p+5)){self.status.text=@"Bluetooth setup failed · reconnect the relay";if(self.giftMode)[NSNotificationCenter.defaultCenter postNotificationName:@"LDNRelayError" object:self userInfo:@{@"message":self.status.text}];[self updateControls];return YES;}
         [self gameReady];
         [self updateControls];return YES;
     case RL_ADVERTISED:
@@ -431,6 +457,7 @@ static NSData *hexData(NSString *text) {
         if (request==self.udpBindRequest)self.udpExpected=nil;
         if(request==self.advertisementRequest){self.advertisementRequest=0;self.nativeAdvertisement=nil;}
         if (request==self.sessionRequest){self.sessionBusy=NO;if(p[3]==RL_HOST){self.nativeHosting=NO;[self.hostButton setTitle:@"Host game" forState:UIControlStateNormal];}}
+        if(self.giftMode)[NSNotificationCenter.defaultCenter postNotificationName:@"LDNRelayError" object:self userInfo:@{@"message":self.status.text}];
         [self updateControls];
         return YES;
     default: break;

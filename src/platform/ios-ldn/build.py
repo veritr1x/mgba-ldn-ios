@@ -82,7 +82,7 @@ if is_mac: info['LSMinimumSystemVersion']='14.0'
 else: info.update(MinimumOSVersion='17.0',LSRequiresIPhoneOS=True)
 (contents/'Info.plist').write_bytes(plistlib.dumps(info))
 ldn=root/'src/gba/sio/ldn'
-sources=[src/'main.m',src/'GameFiles.m',src/'PlayerView.m',src/'RelayController.m',src/'relay-backend.c',src/'pia-host.c',src/'LabCentral.m',src/'apple-crypto.c',src/'relay/relay_codec.c',src/'relay/relay_stream.c',src/'relay/LRTransport.m',src/'relay/LRLog.m',
+sources=[src/'main.m',src/'GiftEngine.m',src/'GiftController.m',src/'GameFiles.m',src/'PlayerView.m',src/'RelayController.m',src/'relay-backend.c',src/'pia-host.c',src/'LabCentral.m',src/'apple-crypto.c',src/'relay/relay_codec.c',src/'relay/relay_stream.c',src/'relay/LRTransport.m',src/'relay/LRLog.m',
  ldn/'ldn-pia.c',ldn/'ldn-pia-connect.c',ldn/'ldn-pia-reliable.c',ldn/'trade-shim.c',root/'src/third-party/zstd/zstdlib.c']
 common=flags+defines+['-I'+str(root/'include'),'-I'+str(root/'build/ios-core/include'),'-I'+str(root/'src'),'-I'+str(ldn),'-I'+str(src/'relay'),'-O2','-ffile-prefix-map='+str(root)+'=.','-fdebug-prefix-map='+str(root)+'=.','-fwrapv','-Wall','-Wextra','-Wno-unused-parameter','-Wno-deprecated-declarations']
 objs=[]
@@ -90,15 +90,20 @@ for i,source in enumerate(sources):
  obj=out/f'app-{i}.o';objc=['-fobjc-arc','-fmodules'] if source.suffix=='.m' else ['-std=c11']
  subprocess.run(['xcrun','--sdk',sdkname,'clang',*common,*objc,'-c',str(source),'-o',str(obj)],check=True)
  objs.append(str(obj))
-frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics','Security','GameController','ImageIO']
+frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics','Security','GameController','ImageIO','JavaScriptCore']
 link=['xcrun','--sdk',sdkname,'clang',*flags,*objs,str(archive),'-lz','-lm','-o',str(binary)]
 for f in frameworks: link+=['-framework',f]
 if is_mac: link+=['-Wl,-rpath,/System/iOSSupport/System/Library/Frameworks']
 subprocess.run(link,check=True)
+resources=contents/'Resources' if is_mac else app
+subprocess.run(['python3',str(src/'tools/build_gifts.py'),str(resources/'gifts.js')],check=True)
 notices=contents/'Resources/Notices' if is_mac else app/'Notices'
 notices.mkdir(parents=True,exist_ok=True)
 for origin,name in [(root/'LICENSE','MPL-2.0.txt'),(src/'relay/LICENSE','Relay-MIT.txt'),(src/'THIRD_PARTY.md','THIRD_PARTY.md'),(root/'src/third-party/zstd/LICENSE','Zstd.txt')]:
  shutil.copy2(origin,notices/name)
+shutil.copy2(src/'gifts/vendor/gblink/LICENSE',notices/'GB-Link-AGPL-3.0.txt')
+shutil.copy2(src/'gifts/vendor/gblink/licenses/LDN-GPL-3.0.txt',notices/'GB-Link-GPL-3.0.txt')
+shutil.copy2(src/'gifts/README.md',notices/'Wonder-Cards.md')
 (notices/'SOURCE.txt').write_text('Source: https://github.com/veritr1x/mgba-ldn-ios-macos/tree/v'+version+'\n')
 identity='-';entitlements=[]
 if a.profile and not is_mac:

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from build_gifts import bundle as gift_bundle
 
 ROOT = Path(__file__).resolve().parents[4]
 SRC = ROOT / 'src/platform/ios-ldn'
@@ -23,6 +24,12 @@ def validate_bundle(app, platform, version):
     expected_id = 'dev.local.mgba-ldn' + ('.mac' if platform == 'mac' else '')
     if info['CFBundleIdentifier'] != expected_id:
         raise ValueError('Public downloads must use the standard bundle identifier')
+    resources = contents / 'Resources' if platform == 'mac' else app
+    if (resources / 'gifts.js').read_text() != gift_bundle():
+        raise ValueError('Wonder Card catalogue is missing or stale; rebuild the app')
+    for name in ('GB-Link-AGPL-3.0.txt', 'GB-Link-GPL-3.0.txt', 'Wonder-Cards.md'):
+        if not (resources / 'Notices' / name).is_file():
+            raise ValueError('Missing Wonder Card notice: ' + name)
     for path in app.rglob('*'):
         if path.is_symlink():
             raise ValueError('Unexpected symlink in app bundle')
@@ -75,7 +82,7 @@ def main():
     notices = dist / 'SOURCE-AND-LICENSES.txt'
     notices.write_text('Source for these binaries: https://github.com/veritr1x/mgba-ldn-ios-macos/tree/v' + version + '\n\n' +
                        (SRC / 'THIRD_PARTY.md').read_text() + '\n\n' + (ROOT / 'LICENSE').read_text() +
-                       '\n\n' + (SRC / 'relay/LICENSE').read_text() + '\n\n' + (ROOT / 'src/third-party/zstd/LICENSE').read_text())
+                       '\n\n' + (SRC / 'relay/LICENSE').read_text() + '\n\n' + (SRC / 'gifts/vendor/gblink/LICENSE').read_text() + '\n\n' + (SRC / 'gifts/vendor/gblink/licenses/LDN-GPL-3.0.txt').read_text() + '\n\n' + (ROOT / 'src/third-party/zstd/LICENSE').read_text())
     artifacts.append(notices)
     (dist / 'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in artifacts))
     print('Release files:', dist)

@@ -44,7 +44,7 @@ static void _labHostReceive(struct IOSRelay *b,const uint8_t *p,size_t n){
             size_t bytes=body[5];if(body[4] || body[6] || body[7] || bytes>RFU_PACKET_MAX || bytes+8>length)return;
             if(bytes){
                 uint8_t mapped[RFU_PACKET_MAX],reply[73];memcpy(mapped,body+8,bytes);
-                if(b->nativeHost && !HostTradeChild(&b->hostTrade,mapped,bytes,reply)){
+                if(b->nativeHost && !b->giftHost && !HostTradeChild(&b->hostTrade,mapped,bytes,reply)){
                     _queueLabData(b,reply,sizeof(reply));
                     char text[128];snprintf(text,sizeof(text),"Native trade: answered Switch-only save barrier %u (reply %u)",
                         htsRead(reply+5),b->hostTrade.replies);b->log(b->user,text);

@@ -17,6 +17,14 @@
   relay, including streaming, notification recovery and batched messages.
   `apple_signing.py` also comes from LDN Relay, under the same MIT licence.
   The copyright notice and permission text are in `relay/LICENSE`.
+- GB-Link / GB-Link-Switch-LDN: all 76 Wonder Cards, gift exchange and RFU leader
+  from `c1a3a97f3ab5c60e87307089d6b7db10e3fd5993`. The gift modules/cards are
+  GPL-3.0 and the RFU leader is AGPL-3.0. Original files, hashes, card-building
+  sources, credits and licences are in `gifts/vendor/gblink/`. See
+  [Wonder Card credits](gifts/README.md) for Project Wonder (Goppier), RAF,
+  Decryptu and the original contributors. GB-Link is credited for reused code
+  and content, not as an endorser of this port. Apple binaries containing this
+  feature are distributed under AGPL-3.0, retaining all file-level notices.
 - zstd: uses the existing vendored `src/third-party/zstd` source and licence.
 - Apple system frameworks are linked from the installed SDK and not vendored.
 

@@ -135,3 +135,9 @@ Omit `--skip-core` after core changes. Do not package a profile-signed build
 for public downloads; rebuild without `--profile` first.
 
 [Developer guide](DEVELOPING.md) · [Source and licences](THIRD_PARTY.md)
+
+## Wonder Card gifts
+
+Open **Wonder Card gifts** in the game menu to choose from GB-Link’s 76 bundled cards or import a `.wc3`. Connect LDN Relay, then tap **Start gift**. On the receiving Switch, choose **Mystery Gift → Wonder Cards → Friend → GBLINK**. No ROM is needed in the app. Keep it visible until the console finishes saving.
+
+This new adapter is locally tested only; console delivery still needs verification. Cards retain their original game-version restrictions. [Instructions, compatibility and GB-Link credits](gifts/README.md). Apple builds with this feature include GPL/AGPL code and its source/licence notices.

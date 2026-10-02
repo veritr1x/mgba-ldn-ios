@@ -1,6 +1,6 @@
 #import "LRLog.h"
 // Adapted from veritr1x/ldn-relay 9713b43. MIT licence: relay/LICENSE.
-#import <UIKit/UIKit.h>
+#import "RelayController.h"
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <TargetConditionals.h>
 #include "relay_protocol.h"
@@ -15,11 +15,9 @@
 // Profiles belong to the phone. The Switch executable contains no game keys.
 static NSString *const FRLGKey = @"fcb6f6adb9dfea66aca9c326149d2b3b08a781895cbf78f720d78b85a57584a99665d237797b2a41ddef14063ec28d259143af7832fb3cbcf2759cbfbdc81d8c";
 
-@interface RelayController : UIViewController
+@interface RelayController ()
 @property(nonatomic, strong) LRTransport *transport;
 @property(nonatomic,strong) LabCentral *labCentral;
-@property(nonatomic,copy) NSData *(^labAdvertisementProvider)(void);
-@property(nonatomic,copy) NSData *(^nativeAdvertisementProvider)(void);
 @property(nonatomic) BOOL labSession;
 @property(nonatomic) BOOL nativeHosting, hostSupported;
 @property(nonatomic,strong) NSData *nativeAdvertisement;
@@ -40,6 +38,7 @@ static NSString *const FRLGKey = @"fcb6f6adb9dfea66aca9c326149d2b3b08a781895cbf7
 @property(nonatomic, strong) UISegmentedControl *benchmarkRate;
 @property(nonatomic, strong) UIStackView *sessionList;
 @property(nonatomic, strong) UIButton *scanButton;
+@property(nonatomic,strong) UILabel *instructionsLabel;
 @property(nonatomic, strong) UIButton *leaveButton;
 @property(nonatomic, strong) UIButton *pingButton;
 @property(nonatomic, strong) UIButton *udpButton;
@@ -113,7 +112,7 @@ static NSData *hexData(NSString *text) {
 - (void)updateControls {
     BOOL available=self.ready && !self.sessionBusy;
     self.scanButton.enabled=available && !self.joined && !self.nativeHosting;
-    self.hostButton.enabled=available && !self.joined && self.hostSupported;
+    self.hostButton.enabled=available && !self.joined && self.hostSupported && !self.joinOnly;
     [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
     self.leaveButton.enabled=available && self.joined;
     self.pingButton.enabled=available && !self.pingExpected;
@@ -136,6 +135,7 @@ static NSData *hexData(NSString *text) {
     UILabel *title=[UILabel new];title.text=@"Multiplayer";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
     self.status=[UILabel new];self.status.numberOfLines=0;self.status.text=@"Starting relay connection…";
     UILabel *instructions=[UILabel new];instructions.numberOfLines=0;
+    self.instructionsLabel=instructions;
     instructions.text=[[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"] isEqual:@"usb"] ? @"Open LDN Relay through Album on your modified Switch and press X for USB. Keep the cable connected and the Mac USB bridge running." : @"1. Open LDN Relay 0.5.0 through Album on your modified Switch.\n2. Press A to connect, then approve this companion on the Switch.\n3. Join a room below, or host your own. Keep this app open and the screen unlocked.\n\nFor FireRed / LeafGreen: open Direct Corner in both games. Choose Become Leader on the host and Join Group on the guest.";
     self.protocolControl=[[UISegmentedControl alloc] initWithItems:@[@"Protocol 1",@"Protocol 3"]];self.protocolControl.selectedSegmentIndex=1;
     self.keyField=[UITextField new];self.keyField.borderStyle=UITextBorderStyleRoundedRect;self.keyField.placeholder=@"Session passphrase (32–128 hex digits)";
@@ -163,6 +163,7 @@ static NSData *hexData(NSString *text) {
     [self.view addSubview:scroll];[scroll addSubview:stack];UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],[scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],[scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],[scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:20],[stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-20],[stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],[stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],[stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-40]]];
     NSLayoutConstraint *detailsHeight=[self.events.heightAnchor constraintEqualToConstant:200];detailsHeight.priority=999;detailsHeight.active=YES;
+    if(self.gameInstructions.length)instructions.text=self.gameInstructions;
     [self loadFRLG];self.nextRequest=1;
     [self updateControls];
     [self record:[NSString stringWithFormat:@"%@ %@ started. ready.", [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"], [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
@@ -184,6 +185,8 @@ static NSData *hexData(NSString *text) {
     self.timer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     UIApplication.sharedApplication.idleTimerDisabled=YES;
 }
+- (void)setGameInstructions:(NSString *)text {_gameInstructions=[text copy];self.instructionsLabel.text=text;}
+- (void)setJoinOnly:(BOOL)value {_joinOnly=value;[self updateControls];}
 - (void)toggleDetails:(UIButton *)button {
     self.events.hidden=!self.events.hidden;[button setTitle:self.events.hidden?@"Show connection details":@"Hide connection details" forState:UIControlStateNormal];
 }
@@ -207,7 +210,7 @@ static NSData *hexData(NSString *text) {
     return request;
 }
 - (void)hostGame {
-    if(!self.ready || self.joined || self.sessionBusy || !self.hostSupported)return;
+    if(!self.ready || self.joined || self.sessionBusy || !self.hostSupported || self.joinOnly)return;
     self.nativeHosting=!self.nativeHosting;
     self.status.text=self.nativeHosting?@"Choose Become Leader in your game":@"Hosting cancelled · scan or host";
     [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
@@ -232,7 +235,7 @@ static NSData *hexData(NSString *text) {
 }
 - (void)gameReady {
     self.sessionBusy=NO;self.udpReady=YES;
-    self.status.text=self.nativeHosting?@"Room ready · choose Join Group on the other console":@"Connected · return to Play and choose Join Group";
+    self.status.text=self.nativeHosting?@"Room ready · choose Join Group on the other console":@"Connected · tap Play and use your game’s Trade Center";
     [self record:self.status.text];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayBound" object:self userInfo:@{@"metadata":self.networkInfo,@"nativeHost":@(self.nativeHosting)}];
 }

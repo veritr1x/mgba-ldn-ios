@@ -39,6 +39,13 @@ CXX_GUARD_START
 // only by that backend, which also needs a separately running ldnd.
 bool GBASIORFUWrapperAttachAir(struct GBASIORFUWrapper* wrapper, const char* backend, const char* tracePath, const char* ldnKeysPath);
 
+// Attach a frontend-supplied backend, e.g. a Bluetooth relay owned by an Apple app.
+// Consumes backend on both success and failure. On success the wrapper owns it until
+// GBASIORFUWrapperDestroy. A wrapper may only have one air attachment.
+struct GBASIORFUBackend;
+bool GBASIORFUWrapperAttachAirBackend(struct GBASIORFUWrapper* wrapper, struct GBASIORFUBackend* backend,
+                                    const char* name, const char* tracePath);
+
 CXX_GUARD_END
 
 #endif

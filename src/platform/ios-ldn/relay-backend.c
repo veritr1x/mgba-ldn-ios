@@ -680,8 +680,6 @@ static void _noopReply(struct GBASIORFUBackend *backend, uint16_t id, bool accep
 struct GBASIORFUBackend *IOSRelayCreate(IOSRelaySend send, IOSRelayCanSend canSend, IOSRelayLog log, void *user) {
     if (!send || !canSend || !log) return NULL;
     struct IOSRelay *b = calloc(1, sizeof(*b)); if (!b) return NULL;
-    b->piaReliable = calloc(1, sizeof(*b->piaReliable));
-    if (!b->piaReliable) { free(b); return NULL; }
     b->send = send; b->canSend=canSend; b->log = log; b->user = user;
     LdnTradeShimInit(&b->piaShim, _shimLog, b);
     b->d = (struct GBASIORFUBackend){.init=_init,.deinit=_deinit,.reset=_reset,

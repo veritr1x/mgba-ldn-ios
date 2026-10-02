@@ -19,3 +19,7 @@ subprocess.run([str(out/'protocol-test')],check=True)
 # Captured post-save phase mismatch, using the same header as the backend.
 subprocess.run(common+[str(src/'host-trade-test.c'),'-o',str(out/'host-trade-test')],check=True)
 subprocess.run([str(out/'host-trade-test')],check=True)
+
+# Upstream Ruby/Sapphire cable translator using an injected relay-style backend.
+subprocess.run(common+[str(src/'wrapper-test.c'),str(root/'src/gba/sio/rfu-wrapper-air.c'),'-o',str(out/'wrapper-test')],check=True)
+subprocess.run([str(out/'wrapper-test')],check=True)

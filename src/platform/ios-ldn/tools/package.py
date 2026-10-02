@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package clean Apple release builds; never distribute a private profile."""
 from pathlib import Path
+import argparse
 import hashlib
 import plistlib
 import shutil
@@ -43,8 +44,12 @@ def validate_bundle(app, platform, version):
 
 def main():
     version = (SRC / 'VERSION').read_text().strip()
-    dist = ROOT / 'dist'
-    dist.mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=ROOT / 'dist')
+    dist = parser.parse_args().output.resolve()
+    dist.mkdir(parents=True, exist_ok=True)
+    if any(dist.iterdir()):
+        raise ValueError('Output directory must be empty; use --output for another release')
     artifacts = []
     for platform in ('ios', 'mac'):
         app = ROOT / f'build/player-{platform}-v{version}/mGBA LDN.app'

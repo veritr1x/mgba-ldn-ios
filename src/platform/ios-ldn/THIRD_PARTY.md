@@ -4,8 +4,13 @@
   `9e73f2d6e2bc2b0c0cc584afa9f7fc410b92697f`. Existing source and the new
   mGBA-derived frontend, Apple crypto adapter, RFU/Pia backend and tests retain
   MPL-2.0. See the repository's `LICENSE` and upstream file notices.
+  `PlayerView.m` and `PlayerMath.h` adapt Android `GameView.java` and
+  `MainActivity.java` layout, controls, palette and display settings.
   `relay-backend.c` adapts the game-frame logic from `rfu-broadcast.c` and uses
   the upstream portable Pia, reliable-channel and trade-shim implementations.
+  Emerald uses the upstream RFU driver. Ruby/Sapphire use the upstream
+  `rfu-wrapper.c` and `rfu-wrapper-air.c` cable translator with an injected Apple
+  relay backend; the translation code and its original notices remain intact.
 - veritr1x/ldn-relay: companion controller and `relay/` protocol/codec files
   adapted from `9713b4366c3416259bdf052ff02ef756d62eb657` (v0.1.0), with
   negotiated event batching from `4c0b420` (v0.1.1), under MIT. The current shared transport follows the 0.5.0 approval-mode

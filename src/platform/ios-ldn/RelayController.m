@@ -11,7 +11,7 @@
 
 
 
-// Public FRLG profile from Decryptu/pokeldn, pinned in relay/README.md.
+// Public FRLG profile from Decryptu/pokeldn, see THIRD_PARTY.md.
 // Profiles belong to the phone. The Switch executable contains no game keys.
 static NSString *const FRLGKey = @"fcb6f6adb9dfea66aca9c326149d2b3b08a781895cbf78f720d78b85a57584a99665d237797b2a41ddef14063ec28d259143af7832fb3cbcf2759cbfbdc81d8c";
 
@@ -96,8 +96,10 @@ static NSData *hexData(NSString *text) {
     if (text.length>16000) text=[text substringFromIndex:text.length-16000];
     self.events.text=text;
     [self.events scrollRangeToVisible:NSMakeRange(text.length,0)];
-    if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
-    [self.logger append:line];
+    if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBADiagnostics"] boolValue]) {
+        if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
+        [self.logger append:line];
+    }
 }
 - (UIButton *)button:(NSString *)title action:(SEL)action {
     UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
@@ -112,6 +114,7 @@ static NSData *hexData(NSString *text) {
     BOOL available=self.ready && !self.sessionBusy;
     self.scanButton.enabled=available && !self.joined && !self.nativeHosting;
     self.hostButton.enabled=available && !self.joined && self.hostSupported;
+    [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
     self.leaveButton.enabled=available && self.joined;
     self.pingButton.enabled=available && !self.pingExpected;
     self.udpButton.enabled=available && self.joined && self.udpReady && !self.udpExpected;
@@ -130,10 +133,10 @@ static NSData *hexData(NSString *text) {
 #else
     self.logURL=[[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"relay.log"];
 #endif
-    UILabel *title=[UILabel new];title.text=@"LDN Relay";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
+    UILabel *title=[UILabel new];title.text=@"Multiplayer";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
     self.status=[UILabel new];self.status.numberOfLines=0;self.status.text=@"Starting relay connection…";
     UILabel *instructions=[UILabel new];instructions.numberOfLines=0;
-    instructions.text=[[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"] isEqual:@"usb"] ? @"Open LDN Relay through Album on your modified Switch, then press X for USB. Keep the cable connected and the Mac USB bridge running. Select the stock Switch session, then join as a member in the game." : @"Open LDN Relay through Album on your modified Switch, then press A. Keep this app open. Sessions appear automatically after Bluetooth connects; tap your session to join.\n\nFireRed/LeafGreen preview · join a session, or tap Host from this game and choose Become Leader in the game. The stock Switch then chooses Join Group.";
+    instructions.text=[[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"] isEqual:@"usb"] ? @"Open LDN Relay through Album on your modified Switch and press X for USB. Keep the cable connected and the Mac USB bridge running." : @"1. Open LDN Relay 0.5.0 through Album on your modified Switch.\n2. Press A to connect, then approve this companion on the Switch.\n3. Join a room below, or host your own. Keep this app open and the screen unlocked.\n\nFor FireRed / LeafGreen: open Direct Corner in both games. Choose Become Leader on the host and Join Group on the guest.";
     self.protocolControl=[[UISegmentedControl alloc] initWithItems:@[@"Protocol 1",@"Protocol 3"]];self.protocolControl.selectedSegmentIndex=1;
     self.keyField=[UITextField new];self.keyField.borderStyle=UITextBorderStyleRoundedRect;self.keyField.placeholder=@"Session passphrase (32–128 hex digits)";
     self.keyField.autocapitalizationType=UITextAutocapitalizationTypeNone;self.keyField.autocorrectionType=UITextAutocorrectionTypeNo;
@@ -142,25 +145,31 @@ static NSData *hexData(NSString *text) {
     self.sessionList=[UIStackView new];self.sessionList.axis=UILayoutConstraintAxisVertical;self.sessionList.spacing=6;
     self.traffic=[UILabel new];self.traffic.numberOfLines=0;self.traffic.text=@"No session joined";
     self.events=[UITextView new];self.events.editable=NO;self.events.font=[UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    self.hostButton=[self button:@"Host from this game" action:@selector(hostGame)];
-    self.scanButton=[self button:@"Scan sessions" action:@selector(scan)];self.leaveButton=[self button:@"Leave session" action:@selector(leave)];
+    self.hostButton=[self button:@"Host game" action:@selector(hostGame)];
+    self.scanButton=[self button:@"Find game" action:@selector(scan)];self.leaveButton=[self button:@"Disconnect game" action:@selector(leave)];
     self.pingButton=[self button:@"Test connection" action:@selector(testPing)];self.udpButton=[self button:@"Test UDP loopback" action:@selector(testUDP)];
     self.statsButton=[self button:@"Read counters" action:@selector(stats)];self.presetButton=[self button:@"Load FireRed / LeafGreen settings" action:@selector(loadFRLG)];
     UIStackView *actions=[[UIStackView alloc] initWithArrangedSubviews:@[self.scanButton,self.leaveButton]];actions.distribution=UIStackViewDistributionFillEqually;
     UIStackView *tests=[[UIStackView alloc] initWithArrangedSubviews:@[self.pingButton,self.udpButton]];tests.distribution=UIStackViewDistributionFillEqually;
     self.benchmarkRate=[[UISegmentedControl alloc] initWithItems:@[@"100/s",@"150/s",@"200/s",@"300/s"]];self.benchmarkRate.selectedSegmentIndex=1;
-    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[title,self.status,instructions,self.presetButton,self.protocolControl,self.keyField,self.portField,actions,self.hostButton,self.sessionList,self.traffic,tests,self.benchmarkRate,[self button:@"Run 60-second benchmark" action:@selector(testBenchmark)],self.statsButton,self.events]];
+    UIButton *details=[self button:@"Show connection details" action:@selector(toggleDetails:)];
+    self.events.hidden=YES;
+    NSMutableArray *views=[NSMutableArray arrayWithArray:@[title,self.status,instructions,actions,self.hostButton,self.sessionList,details,self.events]];
+    if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBADiagnostics"] boolValue])
+        [views addObjectsFromArray:@[self.presetButton,self.protocolControl,self.keyField,self.portField,self.traffic,tests,self.benchmarkRate,[self button:@"Run 60-second benchmark" action:@selector(testBenchmark)],self.statsButton]];
+    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:views];
     stack.axis=UILayoutConstraintAxisVertical;stack.spacing=10;stack.translatesAutoresizingMaskIntoConstraints=NO;
     UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeOnDrag;
     [self.view addSubview:scroll];[scroll addSubview:stack];UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],[scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],[scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],[scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:20],[stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-20],[stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],[stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],[stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-40],[self.events.heightAnchor constraintEqualToConstant:200]]];
+    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],[scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],[scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],[scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:20],[stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-20],[stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],[stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],[stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-40]]];
+    NSLayoutConstraint *detailsHeight=[self.events.heightAnchor constraintEqualToConstant:200];detailsHeight.priority=999;detailsHeight.active=YES;
     [self loadFRLG];self.nextRequest=1;
     [self updateControls];
-    [self record:[NSString stringWithFormat:@"%@ %@ started. iOS integration preview; trading unverified.", [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"], [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
+    [self record:[NSString stringWithFormat:@"%@ %@ started. ready.", [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"], [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
     self.transport=[LRTransport new];
     __weak RelayController *weakSelf=self;
     self.transport.messageHandler=^(NSData *d){[weakSelf receiveMessage:d.bytes size:d.length];};
-    self.transport.statusHandler=^(NSString *s){[weakSelf record:s];};
+    self.transport.statusHandler=^(NSString *s){[weakSelf record:s];if(!weakSelf.ready)weakSelf.status.text=s;};
     self.transport.resetHandler=^{[weakSelf resetLink];};
     if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]){
         self.labCentral=[LabCentral new];
@@ -175,11 +184,15 @@ static NSData *hexData(NSString *text) {
     self.timer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     UIApplication.sharedApplication.idleTimerDisabled=YES;
 }
+- (void)toggleDetails:(UIButton *)button {
+    self.events.hidden=!self.events.hidden;[button setTitle:self.events.hidden?@"Show connection details":@"Hide connection details" forState:UIControlStateNormal];
+}
 - (void)loadFRLG { self.protocolControl.selectedSegmentIndex=1;self.keyField.text=FRLGKey;self.portField.text=@"12345"; }
 - (void)resetLink {
     [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayLost" object:self];
     self.nativeHosting=NO;self.hostSupported=NO;self.nativeAdvertisement=nil;self.advertisementRequest=0;self.labSession=NO;self.ready=NO;self.joined=NO;self.nonce=0;self.centralID=nil;self.handshakeReply=NO;
     self.notificationsActive=NO;self.notifyCentral=nil;self.pendingNotification=nil;
+    self.status.text=@"Waiting for the Switch · press A to reconnect and approve";
     self.networkInfo=nil;self.pingExpected=nil;self.udpExpected=nil;self.pingRequest=0;self.udpBindRequest=0;
     self.udpReceived=0;self.udpBytes=0;[self clearSessions];
     self.sessionBusy=NO;self.udpReady=NO;self.sessionRequest=0;self.traffic.text=@"No session joined";[self updateControls];
@@ -196,8 +209,8 @@ static NSData *hexData(NSString *text) {
 - (void)hostGame {
     if(!self.ready || self.joined || self.sessionBusy || !self.hostSupported)return;
     self.nativeHosting=!self.nativeHosting;
-    self.status.text=self.nativeHosting?@"Hosting armed · choose Become Leader in the game":@"Hosting cancelled · scan or host";
-    [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host from this game" forState:UIControlStateNormal];
+    self.status.text=self.nativeHosting?@"Choose Become Leader in your game":@"Hosting cancelled · scan or host";
+    [self.hostButton setTitle:self.nativeHosting?@"Cancel hosting":@"Host game" forState:UIControlStateNormal];
     [self record:self.status.text];[self tick];
 }
 - (void)publishHostAdvertisement {
@@ -215,11 +228,11 @@ static NSData *hexData(NSString *text) {
     lr_put64(body+1,UINT64_C(0x01006fa0233f8000));lr_put16(body+9,22287);lr_put16(body+11,88);
     body[13]=6;body[14]=key.length;lr_put16(body+15,ad.length);memcpy(body+17,key.bytes,key.length);memcpy(body+17+key.length,ad.bytes,ad.length);
     self.activePort=12345;self.sessionRequest=[self send:RL_HOST body:[NSData dataWithBytes:body length:17+key.length+ad.length]];
-    if(self.sessionRequest){self.sessionBusy=YES;self.nativeAdvertisement=ad;self.status.text=@"Creating the iPhone's room on the Switch relay…";[self record:self.status.text];}
+    if(self.sessionRequest){self.sessionBusy=YES;self.nativeAdvertisement=ad;self.status.text=@"Creating your room…";[self record:self.status.text];}
 }
 - (void)gameReady {
     self.sessionBusy=NO;self.udpReady=YES;
-    self.status.text=self.nativeHosting?@"Hosting ready · choose Join Group on Switch 2":@"LDN ready · return to the game to join the host";
+    self.status.text=self.nativeHosting?@"Room ready · choose Join Group on the other console":@"Connected · return to Play and choose Join Group";
     [self record:self.status.text];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayBound" object:self userInfo:@{@"metadata":self.networkInfo,@"nativeHost":@(self.nativeHosting)}];
 }
@@ -310,12 +323,13 @@ static NSData *hexData(NSString *text) {
     case RL_NETWORKS: {
         if (n<7 || p[6]>RELAY_MAX_NETWORKS || n!=7u+p[6]*18u) break;
         [self clearSessions];self.generation=lr_get16(p+3);self.sessionBusy=NO;
-        self.status.text=[NSString stringWithFormat:@"Found %u session(s) · tap one to join",p[6]];
+        self.status.text=p[6]?@"Choose a FireRed / LeafGreen room":@"No rooms found. Start Become Leader on the other console, then tap Find game.";
         for (unsigned i=0;i<p[6];i++) {
             const uint8_t *row=p+7+i*18;uint8_t index=row[0];uint16_t gen=self.generation;
             uint64_t comm=lr_get64(row+1);
+            if(comm!=UINT64_C(0x01006fa0233f8000) && ![[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBADiagnostics"] boolValue])continue;
             NSString *name=comm==UINT64_C(0x01006fa0233f8000)?@"FireRed / LeafGreen":[NSString stringWithFormat:@"%016llx",(unsigned long long)comm];
-            NSString *label=[NSString stringWithFormat:@"%@ · %u/%u · scene %u · ch %u",name,row[13],row[14],lr_get16(row+9),lr_get16(row+15)];
+            NSString *label=[NSString stringWithFormat:@"%@ · Room %u · %u/%u players",name,index+1,row[13],row[14]];
             __weak RelayController *weakSelf=self;
             UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];button.titleLabel.numberOfLines=0;
             [button setTitle:label forState:UIControlStateNormal];
@@ -339,7 +353,7 @@ static NSData *hexData(NSString *text) {
         }
         if((p[0]==RL_HOSTED)!=self.nativeHosting){[self record:@"Unexpected host/join role response"];return YES;}
         self.networkInfo=[NSData dataWithBytes:p length:n];self.joined=YES;[self clearSessions];
-        self.status.text=self.nativeHosting?@"Room created · opening UDP relay":@"LDN joined · opening UDP relay";
+        self.status.text=self.nativeHosting?@"Room created · preparing multiplayer":@"Joined · preparing multiplayer";
         [self record:[NSString stringWithFormat:@"LDN joined: protocol=%u nodes=%u metadata=%lu bytes",p[3],nodes,(unsigned long)n]];
         uint8_t body[3]={0,(uint8_t)(self.activePort>>8),(uint8_t)self.activePort};self.sessionRequest=[self send:RL_BIND body:[NSData dataWithBytes:body length:3]];
         self.sessionBusy=self.sessionRequest!=0;[self updateControls];return YES;
@@ -347,7 +361,7 @@ static NSData *hexData(NSString *text) {
     case RL_LEFT:
         [[NSNotificationCenter defaultCenter] postNotificationName:@"LDNRelayLost" object:self];
         if (n!=3) break;
-        self.nativeHosting=NO;self.nativeAdvertisement=nil;self.advertisementRequest=0;[self.hostButton setTitle:@"Host from this game" forState:UIControlStateNormal];self.joined=NO;self.sessionBusy=NO;self.udpReady=NO;self.networkInfo=nil;self.udpExpected=nil;self.status.text=@"Session left · relay remains connected";
+        self.nativeHosting=NO;self.nativeAdvertisement=nil;self.advertisementRequest=0;[self.hostButton setTitle:@"Host game" forState:UIControlStateNormal];self.joined=NO;self.sessionBusy=NO;self.udpReady=NO;self.networkInfo=nil;self.udpExpected=nil;self.status.text=@"Session left · relay remains connected";
         self.traffic.text=@"No session joined";[self record:@"LDN session closed."];[self updateControls];return YES;
     case RL_BOUND:
         if (n!=6) break;
@@ -409,11 +423,11 @@ static NSData *hexData(NSString *text) {
         [self record:[NSString stringWithFormat:@"Switch counters: joined=%u queue=%u rx=%llu tx=%llu dropped=%llu bytes_rx=%llu bytes_tx=%llu",p[3],p[4],(unsigned long long)lr_get64(p+5),(unsigned long long)lr_get64(p+13),(unsigned long long)lr_get64(p+21),(unsigned long long)lr_get64(p+29),(unsigned long long)lr_get64(p+37)]];return YES;
     case RL_ERROR:
         if (n!=9) break;
-        self.status.text=@"Relay reported an error · see log";
+        self.status.text=[NSString stringWithFormat:@"Connection failed (0x%08x). Disconnect the game and try again; details are below.",lr_get32(p+5)];
         [self record:[NSString stringWithFormat:@"ERROR command=%u category=%u detail=0x%08x request=%u",p[3],p[4],lr_get32(p+5),request]];
         if (request==self.udpBindRequest)self.udpExpected=nil;
         if(request==self.advertisementRequest){self.advertisementRequest=0;self.nativeAdvertisement=nil;}
-        if (request==self.sessionRequest){self.sessionBusy=NO;if(p[3]==RL_HOST){self.nativeHosting=NO;[self.hostButton setTitle:@"Host from this game" forState:UIControlStateNormal];}}
+        if (request==self.sessionRequest){self.sessionBusy=NO;if(p[3]==RL_HOST){self.nativeHosting=NO;[self.hostButton setTitle:@"Host game" forState:UIControlStateNormal];}}
         [self updateControls];
         return YES;
     default: break;

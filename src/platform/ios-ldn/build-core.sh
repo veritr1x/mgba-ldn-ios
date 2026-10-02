@@ -8,6 +8,7 @@ cmake -S . -B build/ios-core -G Ninja \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
   -DCMAKE_BUILD_TYPE=Release \
+  "-DCMAKE_C_FLAGS=-ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=." \
   -DBUILD_QT=OFF -DBUILD_SDL=OFF \
   -DBUILD_STATIC=ON -DBUILD_SHARED=OFF \
   -DUSE_LDN_BROADCAST=OFF -DDISABLE_DEPS=ON \

@@ -42,3 +42,6 @@ version.c
 *.p12
 *.jsonl
 .DS_Store
+
+/dist
+__pycache__/

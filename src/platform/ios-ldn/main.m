@@ -5,6 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <CommonCrypto/CommonDigest.h>
 #import "RelayController.h"
+#import "GameFiles.h"
 #include "relay-backend.h"
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -25,7 +26,7 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
     struct AudioStream _stream;
     mColor _pixels[240*160];
     uint32_t _keys;
-    BOOL _attached, _paused, _importingSave;
+    BOOL _attached, _paused, _importingSave, _saveLoaded;
     double _accumulator, _lastTime, _phase, _sumL, _sumR;
     unsigned _samples, _frames;
     float _ring[32768*2];
@@ -62,6 +63,11 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 
 @implementation GameController
 - (NSURL *)documents {
+    NSArray *args=NSProcessInfo.processInfo.arguments;NSUInteger index=[args indexOfObject:@"--data-dir"];
+    if(index!=NSNotFound && index+1<args.count){
+        NSURL *dir=[NSURL fileURLWithPath:args[index+1] isDirectory:YES];
+        [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];return dir;
+    }
 #if TARGET_OS_MACCATALYST
     NSURL *dir=[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:[[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]?@"mGBA LDN Host Lab":@"mGBA LDN"];
     [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil]; return dir;
@@ -81,8 +87,10 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     if ([text hasPrefix:@"TRACE "] && ![NSProcessInfo.processInfo.arguments containsObject:@"--trace-pia"]) return;
     if (![text hasPrefix:@"TRACE "]) {self.status.text=text;[self capture:@{@"event":@"game_event",@"text":text}];}
     NSString *line=[NSString stringWithFormat:@"%@ %@\n",NSDate.date,text];
-    if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
-    [self.logger append:line];
+    if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBADiagnostics"] boolValue]) {
+        if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
+        [self.logger append:line];
+    }
     if (![text hasPrefix:@"TRACE "]) NSLog(@"mGBA LDN: %@",text);
 }
 - (UIButton *)actionButton:(NSString *)title selector:(SEL)action {
@@ -124,7 +132,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     NSLayoutConstraint *aspect=[self.screen.heightAnchor constraintEqualToAnchor:self.screen.widthAnchor multiplier:2.0/3.0];aspect.priority=750;aspect.active=YES;
     [self.screen.heightAnchor constraintLessThanOrEqualToConstant:280].active=YES;
     self.pauseButton=[self actionButton:@"Pause" selector:@selector(togglePause)];
-    UIStackView *top=[self row:@[[self actionButton:@"Load ROM" selector:@selector(importROM)],self.pauseButton]];
+    UIStackView *top=[self row:@[[self actionButton:@"Open game" selector:@selector(openGame)],self.pauseButton]];
     UIStackView *dpad=[[UIStackView alloc] initWithArrangedSubviews:@[
       [self row:@[[UIView new],[self keyButton:@"↑" bit:6],[UIView new]]],
       [self row:@[[self keyButton:@"←" bit:5],[UIView new],[self keyButton:@"→" bit:4]]],
@@ -165,11 +173,11 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     self.display.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);
     [self.display addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     UIApplication.sharedApplication.idleTimerDisabled=YES;
-    [self record:@"Load a GBA ROM. Multiplayer preview: join FireRed/LeafGreen through LDN Relay."];
+    [self record:@"Open a .gba file to play. Use the game's save menu to keep your progress."];
     NSArray *args=NSProcessInfo.processInfo.arguments;
     NSUInteger romArg=[args indexOfObject:@"--rom"];
     if(romArg!=NSNotFound && romArg+1<args.count) { [self importROMURL:[NSURL fileURLWithPath:args[romArg+1]]];return; }
-    NSString *last=[NSUserDefaults.standardUserDefaults stringForKey:@"lastROM"];
+    NSString *last=[args containsObject:@"--data-dir"]?nil:[NSUserDefaults.standardUserDefaults stringForKey:@"lastROM"];
     if(last) [self loadROM:[[self documents] URLByAppendingPathComponent:last]];
     else {
         NSURL *incoming=[[self documents] URLByAppendingPathComponent:@"Import.gba"];
@@ -234,29 +242,33 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     }
     atomic_store(&_writeAudio,w);
 }
-- (void)save {
-    if(!_core || !self.saveURL) return;
+- (BOOL)save {
+    if(!_core || !_saveLoaded || !self.saveURL) return YES;
     void *bytes=NULL;size_t n=_core->savedataClone(_core,&bytes);
     if(n && bytes) {
         NSError *error=nil;
-        [[NSData dataWithBytesNoCopy:bytes length:n freeWhenDone:YES] writeToURL:self.saveURL options:NSDataWritingAtomic error:&error];
-        if(error) [self record:[@"Save failed: " stringByAppendingString:error.localizedDescription]];
+        BOOL ok=[[NSData dataWithBytesNoCopy:bytes length:n freeWhenDone:YES] writeToURL:self.saveURL options:NSDataWritingAtomic error:&error];
+        if(!ok) [self record:[@"Save failed: " stringByAppendingString:error.localizedDescription?:@"Could not write the save."]];
+        return ok;
     } else free(bytes);
+    return YES;
 }
-- (void)unload {
-    [self save];
+- (BOOL)unload {
+    if(![self save])return NO;
     if(_core) {
         if(_attached) { _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,NULL);GBASIORFUDestroy(&_rfu);GBASIORFUBackendDestroy(_backend);_backend=NULL;_attached=NO; }
         _core->unloadROM(_core);mCoreConfigDeinit(&_core->config);_core->deinit(_core);_core=NULL;
     }
+    _saveLoaded=NO;self.romURL=nil;self.saveURL=nil;
+    return YES;
 }
 - (BOOL)loadROM:(NSURL *)url {
     if(self.relay.joined) { [self record:@"Leave the relay session before changing games or saves."];return NO; }
-    [self unload];
+    if(![self unload])return NO;
     _core=mCoreFind(url.fileSystemRepresentation);
     if(!_core || _core->platform(_core)!=mPLATFORM_GBA) { if(_core) free(_core);_core=NULL;[self record:@"This file is not a supported GBA ROM."];return NO; }
     mCoreInitConfig(_core,NULL);
-    if(!_core->init(_core)) { mCoreConfigDeinit(&_core->config);free(_core);_core=NULL;return NO; }
+    if(!_core->init(_core)) { mCoreConfigDeinit(&_core->config);free(_core);_core=NULL;[self record:@"Could not start the emulator."];return NO; }
     mCoreConfigSetDefaultIntValue(&_core->config,"volume",0x100);
     mCoreConfigSetDefaultIntValue(&_core->config,"mute",0);
     mCoreLoadConfig(_core);
@@ -265,14 +277,21 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     _core->setAVStream(_core,&_stream.d);
     if(!mCoreLoadFile(_core,url.fileSystemRepresentation)) { [self unload];[self record:@"Could not load ROM."];return NO; }
     self.romURL=url;self.saveURL=[[url URLByDeletingLastPathComponent] URLByAppendingPathComponent:@"game.sav"];
-    NSData *save=[NSData dataWithContentsOfURL:self.saveURL];
+    NSError *saveError=nil;
+    NSData *save=[NSData dataWithContentsOfURL:self.saveURL options:0 error:&saveError];
+    if(!save && [NSFileManager.defaultManager fileExistsAtPath:self.saveURL.path]) {
+        [self unload];[self record:[@"Could not read the save: " stringByAppendingString:saveError.localizedDescription]];return NO;
+    }
     if(save.length) {
-        NSString *name=[NSString stringWithFormat:@"backup-%.0f.sav",NSDate.date.timeIntervalSince1970];
-        [save writeToURL:[[url URLByDeletingLastPathComponent] URLByAppendingPathComponent:name] atomically:YES];
+        NSString *name=[NSString stringWithFormat:@"backup-%@.sav",NSUUID.UUID.UUIDString];
+        if(![save writeToURL:[[url URLByDeletingLastPathComponent] URLByAppendingPathComponent:name] options:NSDataWritingAtomic error:&saveError]) {
+            [self unload];[self record:@"Could not back up the save. Free some storage and try again."];return NO;
+        }
     }
     /* Keep the core's save in memory; atomically persist snapshots in our own sandbox. */
     struct VFile *vf=VFileMemChunk(save.bytes,save.length);
-    if(!vf || !_core->loadSave(_core,vf)) { if(vf) vf->close(vf);[self unload];return NO; }
+    if(!vf || !_core->loadSave(_core,vf)) { if(vf) vf->close(vf);[self unload];[self record:@"Could not load the save. The saved file was left unchanged."];return NO; }
+    _saveLoaded=YES;
     _core->reset(_core);
     _backend=IOSRelayCreate(sendPia,canSendPia,logPia,(__bridge void *)self);
     if(!_backend) { [self unload];return NO; }
@@ -286,9 +305,9 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     _frames=0;_keys=0;_lastTime=0;_accumulator=0;_paused=NO;
     [self.pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
     NSString *relative=[url.path substringFromIndex:[self documents].path.length+1];
-    [NSUserDefaults.standardUserDefaults setObject:relative forKey:@"lastROM"];
+    if(![NSProcessInfo.processInfo.arguments containsObject:@"--data-dir"])[NSUserDefaults.standardUserDefaults setObject:relative forKey:@"lastROM"];
     self.titleLabel.text=url.lastPathComponent.stringByDeletingPathExtension;
-    [self record:@"ROM loaded · Wireless Adapter attached · use the game's own save menu"];
+    [self record:@"Ready to play. Use the game's save menu; Export save makes a copy for other emulators."];
     return YES;
 }
 - (void)tick:(CADisplayLink *)display {
@@ -316,12 +335,12 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     CGImageRef cg=CGImageCreate(240,160,8,32,240*4,color,kCGBitmapByteOrder32Big|kCGImageAlphaNoneSkipLast,provider,NULL,false,kCGRenderingIntentDefault);
     UIImage *image=[UIImage imageWithCGImage:cg];self.screen.image=image;
     CGImageRelease(cg);CGColorSpaceRelease(color);CGDataProviderRelease(provider);
-    if(_frames==180 || _frames==600) {
+    if([NSProcessInfo.processInfo.arguments containsObject:@"--capture-screen"] && (_frames==180 || _frames==600)) {
         [UIImagePNGRepresentation(image) writeToURL:[[self documents] URLByAppendingPathComponent:@"frame.png"] atomically:YES];
         UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithBounds:self.view.bounds];
         UIImage *ui=[renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx){ [self.view drawViewHierarchyInRect:self.view.bounds afterScreenUpdates:NO]; }];
         [UIImagePNGRepresentation(ui) writeToURL:[[self documents] URLByAppendingPathComponent:@"screen.png"] atomically:YES];
-        [self record:[NSString stringWithFormat:@"Rendered %u GBA frames; boot snapshot saved. Multiplayer remains unverified.",_frames]];
+        [self record:[NSString stringWithFormat:@"Rendered %u GBA frames; diagnostic snapshot saved.",_frames]];
     }
 }
 - (void)togglePause {
@@ -368,9 +387,25 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 }
 - (void)importROM { [self pickerForSave:NO]; }
 - (void)importSave { [self pickerForSave:YES]; }
+- (void)openGame {
+    if(self.relay.joined){[self record:@"Leave multiplayer before changing games."];return;}
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"Open game" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Import .gba file…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self importROM];}]];
+    NSURL *games=[[self documents] URLByAppendingPathComponent:@"Games"];
+    NSDirectoryEnumerator *files=[NSFileManager.defaultManager enumeratorAtURL:games includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles errorHandler:nil];
+    NSMutableArray<NSURL *> *roms=[NSMutableArray new];for(NSURL *url in files)if([url.pathExtension.lowercaseString isEqual:@"gba"])[roms addObject:url];
+    [roms sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];}];
+    for(NSURL *rom in roms)[menu addAction:[UIAlertAction actionWithTitle:rom.lastPathComponent.stringByDeletingPathExtension style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self loadROM:rom];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView=self.titleLabel;menu.popoverPresentationController.sourceRect=self.titleLabel.bounds;
+    [self presentViewController:menu animated:YES completion:nil];
+}
 - (void)importROMURL:(NSURL *)url {
+    if(self.relay.joined){[self record:@"Leave multiplayer before changing games."];return;}
     NSData *data=[NSData dataWithContentsOfURL:url];
-    if(data.length<192 || data.length>32*1024*1024) { [self record:@"Choose an uncompressed GBA ROM (up to 32 MB)."];return; }
+    if(![url.pathExtension.lowercaseString isEqual:@"gba"] || data.length<192 || data.length>32*1024*1024) { [self record:@"Choose an uncompressed .gba ROM (up to 32 MB)."];return; }
+    struct mCore *probe=mCoreFind(url.fileSystemRepresentation);BOOL valid=probe && probe->platform(probe)==mPLATFORM_GBA;if(probe)free(probe);
+    if(!valid){[self record:@"This file is not a supported GBA ROM."];return;}
     unsigned char hash[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,hash);
     NSMutableString *hex=[NSMutableString string];for(unsigned i=0;i<sizeof(hash);++i) [hex appendFormat:@"%02x",hash[i]];
     NSURL *dir=[[[self documents] URLByAppendingPathComponent:@"Games"] URLByAppendingPathComponent:hex];
@@ -384,20 +419,28 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     BOOL access=[url startAccessingSecurityScopedResource];
     if(_importingSave) {
         NSData *data=[NSData dataWithContentsOfURL:url];
-        if(data.length!=32768 && data.length!=65536 && data.length!=131072 && data.length!=512 && data.length!=8192) [self record:@"Unsupported save size. Import a raw .sav file for this ROM."];
+        if(!MGBASaveSizeIsValid(data.length)) [self record:@"Unsupported save size. Import a raw .sav file for this ROM."];
         else {
-            NSURL *rom=self.romURL;[self unload];
-            NSError *error=nil;
-            if([data writeToURL:self.saveURL options:NSDataWritingAtomic error:&error]) [self loadROM:rom];
-            else [self record:error.localizedDescription];
+            UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Replace this game's save?" message:@"The game will restart. A backup of your current save will be kept in the game's folder." preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"Import save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                if(self.relay.joined){[self record:@"Leave multiplayer before importing a save."];return;}
+                NSURL *rom=self.romURL,*save=self.saveURL;if(!rom || !save || ![self unload])return;
+                NSError *error=nil;BOOL imported=MGBAImportSave(data,save,&error);
+                [self loadROM:rom];
+                if(!imported)[self record:[@"Save import failed: " stringByAppendingString:error.localizedDescription]];
+            }]];
+            [self presentViewController:confirm animated:YES completion:nil];
         }
     } else [self importROMURL:url];
     if(access) [url stopAccessingSecurityScopedResource];
 }
 - (void)exportSave {
     if(!_core) { [self record:@"Load a ROM first."];return; }
-    [self save];
-    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForExportingURLs:@[self.saveURL] asCopy:YES];
+    if(![self save])return;
+    NSError *error=nil;NSURL *export=MGBAExportSave(self.saveURL,self.romURL.lastPathComponent,&error);
+    if(!export){[self record:error.localizedDescription?:@"No save yet. Save inside the game first."];return;}
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForExportingURLs:@[export] asCopy:YES];
     [self presentViewController:picker animated:YES completion:nil];
 }
 @end
@@ -408,7 +451,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     if(![scene isKindOfClass:UIWindowScene.class])return;
-    RelayController *relay=[RelayController new];relay.tabBarItem=[[UITabBarItem alloc] initWithTitle:@"Switch relay" image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"] tag:1];
+    RelayController *relay=[RelayController new];relay.tabBarItem=[[UITabBarItem alloc] initWithTitle:@"Multiplayer" image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"] tag:1];
     GameController *game=[GameController new];game.relay=relay;game.tabBarItem=[[UITabBarItem alloc] initWithTitle:@"Play" image:[UIImage systemImageNamed:@"gamecontroller"] tag:0];
     UITabBarController *tabs=[UITabBarController new];tabs.viewControllers=@[game,relay];
     self.window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];self.window.rootViewController=tabs;[self.window makeKeyAndVisible];

@@ -1,6 +1,11 @@
 # Mac host ↔ iPhone laboratory
 
-Experimental v0.3.4 adds a two-player Pia/RFU host on Mac and carries encrypted
+**Development-only:** the lab central still uses the older paired transport;
+it is not compatible with the default 0.5.0+ approval-mode iPhone build.
+Update and verify its handshake before attempting an emulator-pair test.
+Use the normal Switch relay route for the downloadable app.
+
+The original v0.3.4 lab added a two-player Pia/RFU host on Mac and carries encrypted
 Pia datagrams through the existing BLE stream. No Switch is needed for this lab.
 A real-ROM trade has **not yet been verified** with this mode.
 
@@ -36,12 +41,11 @@ python3 src/platform/ios-ldn/build.py --platform ios --skip-core --profile /path
 
 Outputs:
 
-- `build/player-mac-host-lab-v0.3.4/mGBA LDN.app`
-- `build/player-ios-v0.3.4/mGBA LDN.app`
+- `build/player-mac-host-lab-v0.6.0/mGBA LDN.app`
+- `build/player-ios-v0.6.0/mGBA LDN.app`
 
 The Mac host uses bundle ID `dev.local.mgba-ldn.hostlab` and saves under
-`~/Library/Application Support/mGBA LDN Host Lab/`. The working USB v0.3.0 app and
-its save directory are preserved. ROMs/saves are not bundled or published.
+`~/Library/Application Support/mGBA LDN Host Lab/`. ROMs/saves are not bundled or published.
 
 ## Live test
 

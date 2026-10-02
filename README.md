@@ -1,16 +1,28 @@
-# iOS / Mac LDN Relay preview
+# mGBA LDN for iOS and macOS
 
-This personal, AI-assisted fork adds a UIKit GBA player and Bluetooth client
-for [LDN Relay](https://github.com/veritr1x/ldn-relay). It uses a modified Switch
-to join a stock Switch 2's FireRed/LeafGreen local-wireless session.
+Play GBA games on iPhone, iPad or an Apple silicon Mac, and trade in
+FireRed / LeafGreen with a stock Switch or Switch 2 through
+[LDN Relay](https://github.com/veritr1x/ldn-relay) on a modified Switch.
 
-**Experimental: ROM playback, native LDN join, Pia authentication and game RFU
-acceptance have been observed on a Mac. A complete trade has not succeeded.**
-The iOS app builds; physical iOS gameplay remains unverified.
+1. [Download a release](https://github.com/veritr1x/mgba-ldn-ios-macos/releases):
+   the **IPA** for iOS sideloading, or the **macOS ZIP** for Mac.
+2. Open the app, choose **Open game**, and import your `.gba` ROM.
+3. Use **Import save** / **Export save** for raw `.sav` files.
+4. For trading, open **Multiplayer**, connect and approve the companion on
+   the modified Switch, then host or join a game.
 
-[Build instructions, setup and current limits](src/platform/ios-ldn/README.md).
-This Apple relay route does not need the USB/ESP32 setup or `prod.keys` described
-in the original upstream instructions below. Upstream licences and notices apply.
+[Installation, trading and building](src/platform/ios-ldn/README.md)
+· [Extending the app](src/platform/ios-ldn/DEVELOPING.md)
+
+Requires iOS 17+ or macOS 14+ (Apple silicon). The IPA must be signed by a
+sideloading tool with your own Apple account. No ROMs or saves are included.
+Multiple iPhone ↔ Switch 2 trades have been reported working; multiplayer
+support is currently limited to FireRed / LeafGreen with one guest.
+
+Based on [Gr3nSkyDragon/mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)
+and [mGBA](https://github.com/mgba-emu/mgba). Their code, credits and licences
+remain intact. The Apple relay route does not need `prod.keys` or an ESP32.
+The original upstream instructions below describe other platforms.
 
 ---
 

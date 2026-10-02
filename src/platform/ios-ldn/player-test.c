@@ -1,9 +1,24 @@
 /* MPL-2.0. Geometry, input and color regression tests for the Apple player. */
 #include "PlayerMath.h"
+#include "GameProfile.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 int main(void){
+    assert(IOSGameProfile("BPRE")==IOS_GAME_FRLG && IOSGameProfile("BPGJ")==IOS_GAME_FRLG);
+    assert(IOSGameProfile("BPEE")==IOS_GAME_EMERALD && IOSGameProfile("BPEJ")==IOS_GAME_EMERALD);
+    assert(IOSGameProfile("AXVE")==IOS_GAME_RUBY && IOSGameProfile("AXPJ")==IOS_GAME_SAPPHIRE);
+    assert(IOSGameProfile("TEST")==IOS_GAME_OTHER);
+    assert(IOSResolveAdapter(IOS_ADAPTER_AUTO,IOS_GAME_RUBY)==IOS_ADAPTER_CABLE);
+    assert(IOSResolveAdapter(IOS_ADAPTER_AUTO,IOS_GAME_SAPPHIRE)==IOS_ADAPTER_CABLE);
+    assert(IOSResolveAdapter(IOS_ADAPTER_AUTO,IOS_GAME_EMERALD)==IOS_ADAPTER_WIRELESS);
+    assert(IOSResolveAdapter(IOS_ADAPTER_OFF,IOS_GAME_RUBY)==IOS_ADAPTER_OFF);
+    assert(IOSResolveAdapter(IOS_ADAPTER_WIRELESS,IOS_GAME_RUBY)==IOS_ADAPTER_WIRELESS);
+
+    assert(IOSAdapterJoinOnly(IOS_ADAPTER_CABLE,IOS_GAME_RUBY));
+    assert(IOSAdapterJoinOnly(IOS_ADAPTER_WIRELESS,IOS_GAME_EMERALD));
+    assert(!IOSAdapterJoinOnly(IOS_ADAPTER_WIRELESS,IOS_GAME_FRLG));
+
     double sizes[][2]={{390,800},{844,390},{1024,768},{768,1024},{912,560},{320,480}};
     unsigned bits[]={0,1,9,8,2,3};
     for(unsigned i=0;i<sizeof(sizes)/sizeof(*sizes);i++){
@@ -26,5 +41,5 @@ int main(void){
     uint8_t gray[]={255,0,0,255};MPColor(gray,3,1);assert(gray[0]==54 && gray[1]==54 && gray[2]==54);
     uint8_t black[]={0,0,0,255},white[]={255,255,255,255};MPColor(black,4,1);MPColor(white,4,1);assert(black[0]==22 && black[1]==51 && black[2]==22);assert(white[0]==156 && white[1]==179 && white[2]==58);
     for(int mode=0;mode<=4;mode++){uint8_t p[]={250,5,128,255};MPColor(p,mode,100);assert(p[3]==255);}
-    puts("Player geometry, diagonal input, color and frame blending: PASS");
+    puts("Game/adapter selection, player geometry, diagonal input, color and frame blending: PASS");
 }

@@ -16,8 +16,9 @@ FireRed / LeafGreen with a stock Switch or Switch 2 through
 
 Requires iOS 17+ or macOS 14+ (Apple silicon). The IPA must be signed by a
 sideloading tool with your own Apple account. No ROMs or saves are included.
-Multiple iPhone ↔ Switch 2 trades have been reported working; multiplayer
-support is currently limited to FireRed / LeafGreen with one guest.
+Multiple FireRed/LeafGreen iPhone ↔ Switch 2 trades have been reported working.
+Emerald and Ruby/Sapphire joining are now included as experimental paths through
+the same relay; console trade verification is pending. One guest is supported.
 
 Based on [Gr3nSkyDragon/mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)
 and [mGBA](https://github.com/mgba-emu/mgba). Their code, credits and licences

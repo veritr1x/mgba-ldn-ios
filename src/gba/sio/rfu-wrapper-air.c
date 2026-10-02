@@ -1608,7 +1608,21 @@ static void _airDestroy(void* context) {
 
 bool GBASIORFUWrapperAttachAir(struct GBASIORFUWrapper* wrapper, const char* backend, const char* tracePath, const char* ldnKeysPath) {
 	struct GBASIORFUBackend* b = GBASIORFUBackendCreate(backend);
-	if (!b) {
+	if (!b) return false;
+#ifdef USE_LDN_BROADCAST
+	if (!strcmp(backend, "broadcast"))
+		GBASIORFUBroadcastSetKeysPath(b, ldnKeysPath && ldnKeysPath[0] ? ldnKeysPath : NULL);
+#else
+	(void) ldnKeysPath;
+#endif
+	return GBASIORFUWrapperAttachAirBackend(wrapper, b, backend, tracePath);
+}
+
+bool GBASIORFUWrapperAttachAirBackend(struct GBASIORFUWrapper* wrapper, struct GBASIORFUBackend* b,
+									const char* name, const char* tracePath) {
+	if (!b) return false;
+	if (!wrapper || wrapper->air) {
+		GBASIORFUBackendDestroy(b);
 		return false;
 	}
 	struct Air* air = calloc(1, sizeof(*air));
@@ -1618,17 +1632,8 @@ bool GBASIORFUWrapperAttachAir(struct GBASIORFUWrapper* wrapper, const char* bac
 	}
 	air->w = wrapper;
 	air->backend = b;
-	snprintf(air->backendName, sizeof(air->backendName), "%s", backend);
-#ifdef USE_LDN_BROADCAST
-	if (!strcmp(backend, "broadcast")) {
-		// Before the backend is initialised, like the wireless adapter's own set-up: without prod.keys it can hop the
-		// channels but not decrypt what it captures. The wrapper never starts ldnd either; it joins whatever ldnd the
-		// user already has running.
-		GBASIORFUBroadcastSetKeysPath(b, ldnKeysPath && ldnKeysPath[0] ? ldnKeysPath : NULL);
-	}
-#else
-	(void) ldnKeysPath;
-#endif
+	snprintf(air->backendName, sizeof(air->backendName), "%s", name ? name : "custom");
+
 	GBASIORFUCreate(&air->rfu, b);
 	if (tracePath && tracePath[0]) {
 		GBASIORFUSetTraceFile(&air->rfu, tracePath);
@@ -1637,6 +1642,7 @@ bool GBASIORFUWrapperAttachAir(struct GBASIORFUWrapper* wrapper, const char* bac
 	_recvReset(&air->rx0);
 	_recvReset(&air->rx1);
 	if (b->init && !b->init(b, &air->rfu)) {
+		if (b->deinit) b->deinit(b);
 		GBASIORFUDestroy(&air->rfu);
 		GBASIORFUBackendDestroy(b);
 		free(air);

@@ -1,6 +1,6 @@
 # mGBA LDN for iOS and macOS
 
-A GBA player with FireRed / LeafGreen multiplayer through
+A GBA player with Pokémon multiplayer through
 [LDN Relay](https://github.com/veritr1x/ldn-relay). A modified Switch provides
 the wireless connection to the stock Switch or Switch 2.
 
@@ -45,8 +45,9 @@ The game fills the screen, with touch controls below it in portrait and overlaid
 in landscape. **☰** opens games, saves, reset, pause, multiplayer and settings.
 Display settings include button colors/opacity, panel pictures, color modes,
 frame blending, pixel effects, scanlines, FPS and frame counters. Settings and
-pictures stay on this device. **Wireless adapter → Off** disables the emulated
-GBA wireless adapter; changing this restarts the game from its in-game save.
+pictures stay on this device. **Wireless adapter → Automatic** selects wireless
+for FireRed/LeafGreen or Emerald, and the cable wrapper for Ruby/Sapphire.
+**Off** disables the adapter. Changing adapters restarts from the in-game save.
 
 Gamepads use physical east/south for GBA A/B, the D-pad or left stick, shoulder
 buttons, Menu for Start and Options for Select. Supported buttons depend on
@@ -55,7 +56,7 @@ the controller. Touch controls can be hidden in Display settings.
  Keyboard: arrows, **Z** = A, **X** = B,
 **Return** = Start, **right Shift** = Select, **A** = L, **S** = R.
 
-## Trade with a Switch
+## FireRed / LeafGreen trades
 
 Use [LDN Relay 0.5.0 or later](https://github.com/veritr1x/ldn-relay) on a modified
 Switch, plus FireRed or LeafGreen on the stock console. Have compatible saves
@@ -82,10 +83,26 @@ If a room does not appear, make sure the other game is waiting as leader.
 Multiple completed iPhone ↔ Switch 2 trades have been reported with the 0.5.0
 transport. Release 0.7.0 keeps that game protocol and adds the Android-style player
 interface. A fresh release-build trade still needs hardware testing.
-Only one guest is supported. Other GBA games can run, but this Apple multiplayer
-adapter currently supports FireRed / LeafGreen only. There are no save states,
-controller remapping or cable-link emulation in this frontend. See the
-[Android comparison](ANDROID_PARITY.md) for platform differences.
+Only one guest is supported. There are no save states, controller remapping
+or general local cable multiplayer. See the [Android comparison](ANDROID_PARITY.md).
+
+## Emerald and Ruby / Sapphire (experimental)
+
+These games now use upstream multiplayer code through the same Switch relay.
+The code and local tests are included; complete console trades still need testing.
+
+1. Leave **Wireless adapter → Automatic** selected and load your ROM and save.
+2. Let FireRed/LeafGreen on the stock Switch host **Direct Corner → Become Leader**.
+   Its save must have completed the Sevii Islands trading quest; ordinary game
+   trading restrictions still apply.
+3. Connect and approve LDN Relay as above, then use **Find game** to join the room.
+4. Tap **Play**. In Emerald, use the Wireless Club Trade Center and **Join Group**.
+   In Ruby/Sapphire, speak to the middle Cable Club Trade Center attendant. The
+   cable wrapper translates that game’s cable traffic to the host’s wireless protocol.
+
+Emerald and the cable wrapper are join-only; **Host game** is disabled. Start
+the stock host before entering the Cable Club. No ESP32 is needed for this route.
+Connecting an ESP32 directly to the Apple app is not implemented.
 
 ## Build
 

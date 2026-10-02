@@ -30,10 +30,11 @@ static UIColor *hexColor(NSString *s){unsigned n=0xFFFFFF;[[NSScanner scannerWit
 @implementation PlayerView
 - (instancetype)initWithDirectory:(NSURL *)directory {
     if(!(self=[super initWithFrame:CGRectZero]))return nil;
-    _directory=directory;_settings=[@{@"wireless":@YES,@"fps":@YES,@"counter":@NO,@"relayStatus":@YES,@"controls":@YES,@"opacity":@35,@"colorMode":@0,@"saturation":@100,@"blend":@NO,@"pixel":@0,@"horizontal":@NO,@"vertical":@NO,@"horizontalStrength":@35,@"verticalStrength":@35,@"mirror":@NO,@"portraitColor":@"000000",@"leftColor":@"000000",@"rightColor":@"000000",@"dpad":@"FFFFFF",@"a":@"FFFFFF",@"b":@"FFFFFF",@"l":@"FFFFFF",@"r":@"FFFFFF",@"start":@"FFFFFF",@"select":@"FFFFFF"} mutableCopy];
+    _directory=directory;_settings=[@{@"wireless":@YES,@"adapter":@3,@"fps":@YES,@"counter":@NO,@"relayStatus":@YES,@"controls":@YES,@"opacity":@35,@"colorMode":@0,@"saturation":@100,@"blend":@NO,@"pixel":@0,@"horizontal":@NO,@"vertical":@NO,@"horizontalStrength":@35,@"verticalStrength":@35,@"mirror":@NO,@"portraitColor":@"000000",@"leftColor":@"000000",@"rightColor":@"000000",@"dpad":@"FFFFFF",@"a":@"FFFFFF",@"b":@"FFFFFF",@"l":@"FFFFFF",@"r":@"FFFFFF",@"start":@"FFFFFF",@"select":@"FFFFFF"} mutableCopy];
     NSDictionary *saved=[NSDictionary dictionaryWithContentsOfURL:[directory URLByAppendingPathComponent:@"display.plist"]];
     // Ignore unknown or wrongly typed preferences rather than crashing on an edited file.
     for(NSString *key in _settings.allKeys){id value=saved[key];if([value isKindOfClass:[_settings[key] isKindOfClass:NSString.class]?NSString.class:NSNumber.class])_settings[key]=value;}
+    if(![saved[@"adapter"] isKindOfClass:NSNumber.class] && ![_settings[@"wireless"] boolValue])_settings[@"adapter"]=@0;
     _touches=[NSMutableSet new];self.multipleTouchEnabled=YES;self.backgroundColor=UIColor.blackColor;
     _screen=[UIImageView new];_screen.contentMode=UIViewContentModeScaleToFill;_screen.backgroundColor=UIColor.blackColor;
     _screen.layer.magnificationFilter=kCAFilterNearest;_screen.layer.minificationFilter=kCAFilterNearest;_screen.accessibilityLabel=@"Game screen";

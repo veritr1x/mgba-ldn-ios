@@ -8,6 +8,7 @@ code. Keep upstream changes and their original authors when merging
 - `main.m`: game menu, emulator loop, audio, input and file pickers.
 - `PlayerView.m`: touch surface, display settings and background imports.
 - `PlayerMath.h`: portable layout, hit testing, color transforms and frame blending.
+- `GameProfile.h`: ROM-based automatic wireless/cable selection and join-only games.
 - `GameFiles.m`: backed-up save replacement and named export.
 - `RelayController.m`: room discovery, host/join UI and relay commands.
 - `relay-backend.c`, `native-host.inc`, `pia-host.c`: FRLG/Pia/RFU adaptation.
@@ -70,6 +71,17 @@ its binary/privacy validation. `tools/package_switch.py` preserves the NRO,
 source record and licenses in separate release assets. Tag publishing waits
 for both jobs and generates checksums for the IPA, both ZIPs and NRO.
 
-Keep Android adapter work separate from frontend parity. The Apple app uses
-its own FRLG backend; see [ANDROID_PARITY.md](ANDROID_PARITY.md) before claiming
-that an upstream game feature works through the Switch relay.
+## Additional Pokémon games
+
+Emerald uses the same upstream RFU driver as FireRed/LeafGreen. Ruby/Sapphire
+use `GBASIORFUWrapper` and the upstream `rfu-wrapper-air.c` translator.
+`GBASIORFUWrapperAttachAirBackend` injects the Apple relay backend instead of
+creating an ESP32 serial backend. It takes ownership on success or failure;
+destroying the wrapper deinitializes and frees the injected backend.
+
+`wrapper-test.c` exercises the real translator with a controlled RFU peer. It
+checks Ruby/Sapphire LinkPlayer exchange, room filtering, connection, initial NI
+data and failure cleanup. It does not emulate a full game or prove trade completion.
+The existing encrypted relay tests cover the shared transport separately.
+Rebuild the Mac core without `--skip-core` after changing the upstream translator.
+See [ANDROID_PARITY.md](ANDROID_PARITY.md) for remaining platform differences.

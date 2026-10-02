@@ -17,19 +17,21 @@ file pickers, settings and window behavior follow the Apple platform.
 | Color modes | Original, muted, vivid, black and white, DMG; saturation setting |
 | Effects | Frame blending, pixel grid, round pixels, RGB subpixels, horizontal/vertical scanlines |
 | Counters | FPS and emulated frame count |
-| Wireless adapter | Off or Switch relay; changing it restarts from the in-game save |
+| Wireless adapter | Automatic, wireless, cable wrapper or Off; changing it restarts from the in-game save |
 | Connection UI | Switch approval, Find game / Host game / Disconnect, connection details |
 | Diagnostic export | Recent game events; detailed private capture remains developer-only |
 | Android USB / ESP32 route | Replaced by BLE to a modified Switch running LDN Relay |
 | FireRed / LeafGreen multiplayer | Host or join with one guest through the relay |
-| Emerald / Ruby / Sapphire multiplayer | Not implemented in the Apple relay adapter |
+| Emerald multiplayer | Upstream RFU driver through Switch relay; join-only, experimental |
+| Ruby / Sapphire multiplayer | Upstream cable-to-wireless translator through Switch relay; join-only, experimental |
 | Local cable multiplayer | Not implemented in this frontend |
 | Save states / rewind / fast-forward | Not provided by either mobile frontend |
 
-The Android USB backend and the Apple relay adapter are different game transport
-implementations. Building the latest upstream core does not add the ESP32 game's
-protocol support to the Apple adapter. Extending supported games needs separate
-protocol work and console testing.
+The Apple adapter connects the upstream RFU driver and Ruby/Sapphire cable
+translator to LDN Relay. Automatic mode selects the driver from the ROM header.
+Emerald and Ruby/Sapphire join a FireRed/LeafGreen host on the stock console;
+complete trades with these new Apple paths have not been verified on hardware.
+Android's USB/ESP32 transport itself is not implemented on Apple.
 
 The Apple keyboard keeps its previous mapping (Z=A, X=B, A=L, S=R) so existing
 users do not have to relearn it. Gamepad east=A and south=B match Android's
@@ -39,7 +41,9 @@ on screen. Multi-touch controls also work with an external keyboard.
 ## Validation
 
 Geometry, diagonal input, color transforms and frame blending have automated
-sanitizer tests. Existing save and relay protocol tests run unchanged. Both
+sanitizer tests. Cable translator tests cover Ruby/Sapphire player exchange,
+host filtering, RFU connection, initial data transfer and backend cleanup.
+Existing save and relay protocol tests also run. Both
 Apple targets and the pinned Switch NRO build in CI. Mac UI checks cover actual
 ROM playback and keyboard input, customization and save handling.
 

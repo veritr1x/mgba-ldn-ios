@@ -8,6 +8,8 @@
 #import "GameFiles.h"
 #import "PlayerView.h"
 #import "PlayerMath.h"
+#import "GameProfile.h"
+#include <mgba/internal/gba/sio/rfu-wrapper-air.h>
 #import <GameController/GameController.h>
 #include "relay-backend.h"
 #include <mgba/core/core.h>
@@ -25,6 +27,10 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
 @interface GameController : UIViewController <UIDocumentPickerDelegate> {
     struct mCore *_core;
     struct GBASIORFU _rfu;
+    struct GBASIORFUWrapper _wrapper;
+    BOOL _wrapperAttached;
+    enum IOSPokemonGame _gameProfile;
+    enum IOSAdapterChoice _adapter;
     struct GBASIORFUBackend *_backend;
     struct AudioStream _stream;
     mColor _pixels[240*160];
@@ -151,7 +157,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         GameController *g=weakGame;if(!g || !g->_backend)return nil;
         uint8_t m[IOS_LAB_METADATA_SIZE];return IOSRelayLabAdvertisement(g->_backend,m)?[NSData dataWithBytes:m length:sizeof(m)]:nil;
     };
-    self.relay.nativeAdvertisementProvider=^NSData *{GameController *g=weakGame;if(!g || !g->_backend || g->_paused || ![g.player.settings[@"wireless"] boolValue])return nil;uint8_t ad[122];return IOSRelayNativeAdvertisement(g->_backend,ad)?[NSData dataWithBytes:ad length:122]:nil;};
+    self.relay.nativeAdvertisementProvider=^NSData *{GameController *g=weakGame;if(!g || !g->_backend || g->_paused || g->_adapter==IOS_ADAPTER_OFF)return nil;uint8_t ad[122];return IOSRelayNativeAdvertisement(g->_backend,ad)?[NSData dataWithBytes:ad length:122]:nil;};
     [self startAudio];
     self.display=[CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
     self.display.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);
@@ -213,12 +219,13 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 }
 - (void)showWirelessAdapter {
     if(self.relay.joined){[self record:@"Disconnect multiplayer before changing the wireless adapter."];return;}
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Wireless adapter" message:@"Changing adapters restarts the game from its last in-game save. Switch relay uses Bluetooth to a modified Switch; Off plays without a GBA wireless adapter." preferredStyle:UIAlertControllerStyleActionSheet];
-    for(NSNumber *enabled in @[@NO,@YES]){UIAlertAction *option=[UIAlertAction actionWithTitle:enabled.boolValue?@"Switch relay":@"Off" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){self.player.settings[@"wireless"]=enabled;[self.player saveSettings];if(self.romURL)[self loadROM:self.romURL];[self record:enabled.boolValue?@"Wireless adapter: Switch relay":@"Wireless adapter: off"];}];[a addAction:option];}
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Wireless adapter" message:@"Automatic uses wireless for FireRed/LeafGreen and Emerald, or the cable wrapper for Ruby/Sapphire. Changing adapters restarts the game from its last in-game save." preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *labels=@[@"Off",@"Wireless → Switch relay",@"Cable wrapper → Switch relay",@"Automatic (recommended)"];
+    for(NSNumber *choice in @[@3,@1,@2,@0]){[a addAction:[UIAlertAction actionWithTitle:labels[choice.unsignedIntegerValue] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){self.player.settings[@"adapter"]=choice;[self.player saveSettings];if(self.romURL)[self loadROM:self.romURL];}]];}
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.menuButton;a.popoverPresentationController.sourceRect=self.menuButton.bounds;[self presentViewController:a animated:YES completion:nil];
 }
 - (void)showMultiplayer {
-    if(![self.player.settings[@"wireless"] boolValue]){[self record:@"Choose Wireless adapter → Switch relay in the game menu first."];return;}
+    if(_adapter==IOS_ADAPTER_OFF){[self record:@"Choose Wireless adapter → Automatic in the game menu first."];return;}
     [self clearInput];self.relay.title=@"Switch multiplayer";self.relay.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Play" style:UIBarButtonItemStyleDone target:self action:@selector(closePanel)];
     UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:self.relay];nav.modalPresentationStyle=UIModalPresentationFullScreen;[self presentViewController:nav animated:YES completion:nil];
 }
@@ -232,7 +239,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     [self presentViewController:[[UIDocumentPickerViewController alloc] initForExportingURLs:@[url] asCopy:YES] animated:YES completion:nil];
 }
 - (void)showAbout {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"mGBA LDN" message:@"Apple frontend by veritr1x. Based on mGBA and Gr3nSkyDragon's mGBA LDN, with controls and display options adapted from its Android frontend.\n\nSwitch multiplayer uses LDN Relay with approval on the modified Switch. FireRed / LeafGreen only; one guest.\n\nKeyboard: arrows, Z = A, X = B, Return = Start, right Shift = Select, A = L, S = R.\nGamepad: east = A, south = B, shoulders = L/R, Menu = Start, Options = Select.\n\nSource and licenses are included in the download. No games are bundled." preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"mGBA LDN" message:@"Apple frontend by veritr1x. Based on mGBA and Gr3nSkyDragon's mGBA LDN, with controls and display options adapted from its Android frontend.\n\nSwitch multiplayer uses LDN Relay with approval on the modified Switch. FireRed / LeafGreen, Emerald, and Ruby/Sapphire via the cable wrapper. One guest; new game paths need console testing.\n\nKeyboard: arrows, Z = A, X = B, Return = Start, right Shift = Select, A = L, S = R.\nGamepad: east = A, south = B, shoulders = L/R, Menu = Start, Options = Select.\n\nSource and licenses are included in the download. No games are bundled." preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];
 }
 - (void)startAudio {
     NSError *error=nil;
@@ -286,7 +293,8 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 - (BOOL)unload {
     if(![self save])return NO;
     if(_core) {
-        if(_attached) { _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,NULL);GBASIORFUDestroy(&_rfu);GBASIORFUBackendDestroy(_backend);_backend=NULL;_attached=NO; }
+        if(_wrapperAttached){_core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,NULL);GBASIORFUWrapperDestroy(&_wrapper);_backend=NULL;_wrapperAttached=NO;}
+        else if(_attached) { _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,NULL);GBASIORFUDestroy(&_rfu);GBASIORFUBackendDestroy(_backend);_backend=NULL;_attached=NO; }
         _core->unloadROM(_core);mCoreConfigDeinit(&_core->config);_core->deinit(_core);_core=NULL;
     }
     _saveLoaded=NO;self.romURL=nil;self.saveURL=nil;
@@ -323,21 +331,39 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     if(!vf || !_core->loadSave(_core,vf)) { if(vf) vf->close(vf);[self unload];[self record:@"Could not load the save. The saved file was left unchanged."];return NO; }
     _saveLoaded=YES;
     _core->reset(_core);
-    _backend=IOSRelayCreate(sendPia,canSendPia,logPia,(__bridge void *)self);
-    if(!_backend) { [self unload];return NO; }
-    IOSRelayEnableNativeHost(_backend,![[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
-    IOSRelaySetLabHost(_backend,[[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
-    GBASIORFUCreate(&_rfu,_backend);
-    NSURL *trace=self.captureURL?[[self.captureURL URLByDeletingPathExtension] URLByAppendingPathExtension:@"rfu.log"]:[[self documents] URLByAppendingPathComponent:@"rfu.log"];
-    if([NSProcessInfo.processInfo.arguments containsObject:@"--trace-rfu"]) GBASIORFUSetTraceFile(&_rfu,trace.fileSystemRepresentation);
-    _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,[self.player.settings[@"wireless"] boolValue]?&_rfu.d:NULL);_attached=YES;
+    struct mGameInfo info;_core->getGameInfo(_core,&info);_gameProfile=IOSGameProfile(info.code);
+    _adapter=IOSResolveAdapter([self.player.settings[@"adapter"] intValue],_gameProfile);
+    if(_adapter!=IOS_ADAPTER_OFF){
+        _backend=IOSRelayCreate(sendPia,canSendPia,logPia,(__bridge void *)self);
+        if(!_backend) { [self unload];[self record:@"Could not create the relay adapter."];return NO; }
+        IOSRelayEnableNativeHost(_backend,!IOSAdapterJoinOnly(_adapter,_gameProfile) && ![[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
+        IOSRelaySetLabHost(_backend,!IOSAdapterJoinOnly(_adapter,_gameProfile) && [[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
+        NSURL *trace=self.captureURL?[[self.captureURL URLByDeletingPathExtension] URLByAppendingPathExtension:@"rfu.log"]:[[self documents] URLByAppendingPathComponent:@"rfu.log"];
+        const char *tracePath=[NSProcessInfo.processInfo.arguments containsObject:@"--trace-rfu"]?trace.fileSystemRepresentation:NULL;
+        if(_adapter==IOS_ADAPTER_CABLE){
+            GBASIORFUWrapperCreate(&_wrapper,"switch-relay");
+            // The air translator owns this backend on both success and failure.
+            if(!GBASIORFUWrapperAttachAirBackend(&_wrapper,_backend,"switch-relay",tracePath)){
+                _backend=NULL;GBASIORFUWrapperDestroy(&_wrapper);[self unload];[self record:@"Could not attach the cable-to-wireless translator."];return NO;
+            }
+            _wrapperAttached=YES;_core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,&_wrapper.d);
+        }else{
+            GBASIORFUCreate(&_rfu,_backend);if(tracePath)GBASIORFUSetTraceFile(&_rfu,tracePath);
+            _attached=YES;_core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,&_rfu.d);
+        }
+    }
+    self.relay.joinOnly=IOSAdapterJoinOnly(_adapter,_gameProfile);
+    NSString *setup=@"Open LDN Relay through Album on the modified Switch, press A to connect, then approve this companion. Keep this app visible and unlocked.";
+    if(_adapter==IOS_ADAPTER_CABLE)self.relay.gameInstructions=[setup stringByAppendingString:@"\n\nRuby / Sapphire: FireRed or LeafGreen on the stock Switch must host Direct Corner → Become Leader. Tap Find game here, join its room, then tap Play and speak to the middle Cable Club Trade Center attendant in Ruby/Sapphire. The wrapper joins the wireless host for you.\n\nFinish the host's Sevii Islands trading quest first. Cable-wrapper trading is new on Apple and needs console verification."];
+    else if(_gameProfile==IOS_GAME_EMERALD)self.relay.gameInstructions=[setup stringByAppendingString:@"\n\nEmerald: use the Wireless Club Trade Center and Join Group while FireRed/LeafGreen hosts Direct Corner on the stock console. The FRLG save must have completed the Sevii Islands trading quest. Normal game trading restrictions still apply.\n\nEmerald uses the upstream RFU driver; this Apple path needs console verification."];
+    else self.relay.gameInstructions=[setup stringByAppendingString:@"\n\nFireRed / LeafGreen: open Direct Corner in both games. Choose Become Leader on the host and Join Group on the guest. Tap Find game to join, or Host game to lead from this app."];
     _stream.rate=_core->audioSampleRate(_core);_phase=_sumL=_sumR=0;_samples=0;
     _frames=0;[self clearInput];_previousValid=NO;_fpsTime=0;_fpsFrames=0;_lastTime=0;_accumulator=0;_paused=NO;
     [self.pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
     NSString *relative=[url.path substringFromIndex:[self documents].path.length+1];
     if(![NSProcessInfo.processInfo.arguments containsObject:@"--data-dir"])[NSUserDefaults.standardUserDefaults setObject:relative forKey:@"lastROM"];
     self.titleLabel.text=url.lastPathComponent.stringByDeletingPathExtension;
-    [self record:@"Ready"];
+    [self record:_adapter==IOS_ADAPTER_CABLE?@"Ruby/Sapphire cable wrapper · Switch hosts":_gameProfile==IOS_GAME_EMERALD?@"Emerald wireless adapter":@"Ready"];
     return YES;
 }
 - (void)tick:(CADisplayLink *)display {
@@ -402,8 +428,8 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         NSData *rom=[NSData dataWithContentsOfURL:self.romURL],*save=[NSData dataWithContentsOfURL:self.saveURL];uint8_t digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(rom.bytes,(CC_LONG)rom.length,digest);NSMutableString *hash=[NSMutableString new];for(unsigned i=0;i<sizeof(digest);i++)[hash appendFormat:@"%02x",digest[i]];
         [self capture:@{@"event":@"session_start",@"metadata_b64":[metadata base64EncodedStringWithOptions:0]?:@"",@"rom_sha256":hash,@"save_b64":[save base64EncodedStringWithOptions:0]?:@"",@"save_scope":@"Last persisted save; not an emulator savestate"}];self.captureSession=YES;
     }
-    if(!_core || _paused || ![self.player.settings[@"wireless"] boolValue] || !( [note.userInfo[@"lab"] boolValue]?IOSRelayConfigureLab(_backend,metadata.bytes,metadata.length,[note.userInfo[@"host"] boolValue],monotonicMs()):[note.userInfo[@"nativeHost"] boolValue]?IOSRelayConfigureNativeHost(_backend,metadata.bytes,metadata.length,monotonicMs()):IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs()))) {
-        [self record:@"Load and resume FireRed before joining. Relay metadata must describe an FRLG host."];
+    if(!_core || _paused || _adapter==IOS_ADAPTER_OFF || !( [note.userInfo[@"lab"] boolValue]?IOSRelayConfigureLab(_backend,metadata.bytes,metadata.length,[note.userInfo[@"host"] boolValue],monotonicMs()):[note.userInfo[@"nativeHost"] boolValue]?IOSRelayConfigureNativeHost(_backend,metadata.bytes,metadata.length,monotonicMs()):IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs()))) {
+        [self record:@"Load and resume the Pokémon ROM before joining. The stock Switch room must be FireRed / LeafGreen."];
         [self.relay leave];
     }
 }

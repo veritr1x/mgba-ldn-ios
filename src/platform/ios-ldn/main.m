@@ -6,6 +6,9 @@
 #import <CommonCrypto/CommonDigest.h>
 #import "RelayController.h"
 #import "GameFiles.h"
+#import "PlayerView.h"
+#import "PlayerMath.h"
+#import <GameController/GameController.h>
 #include "relay-backend.h"
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -25,7 +28,10 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
     struct GBASIORFUBackend *_backend;
     struct AudioStream _stream;
     mColor _pixels[240*160];
-    uint32_t _keys;
+    uint32_t _keys, _pendingKeys;
+    uint8_t _displayPixels[240*160*4], _previousPixels[240*160*4];
+    BOOL _previousValid;
+    double _fpsTime;unsigned _fpsFrames;
     BOOL _attached, _paused, _importingSave, _saveLoaded;
     double _accumulator, _lastTime, _phase, _sumL, _sumR;
     unsigned _samples, _frames;
@@ -34,6 +40,10 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
 }
 @property(nonatomic,strong) RelayController *relay;
 @property(nonatomic,strong) UIImageView *screen;
+@property(nonatomic,strong) PlayerView *player;
+@property(nonatomic,strong) UIButton *menuButton;
+@property(nonatomic,strong) UILabel *counters;
+@property(nonatomic,strong) NSMutableArray<NSString *> *recentEvents;
 @property(nonatomic,strong) UILabel *status;
 @property(nonatomic,strong) UILabel *titleLabel;
 @property(nonatomic,strong) UIButton *pauseButton;
@@ -87,6 +97,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     if ([text hasPrefix:@"TRACE "] && ![NSProcessInfo.processInfo.arguments containsObject:@"--trace-pia"]) return;
     if (![text hasPrefix:@"TRACE "]) {self.status.text=text;[self capture:@{@"event":@"game_event",@"text":text}];}
     NSString *line=[NSString stringWithFormat:@"%@ %@\n",NSDate.date,text];
+    if(![text hasPrefix:@"TRACE "]){[self.recentEvents addObject:line];if(self.recentEvents.count>200)[self.recentEvents removeObjectAtIndex:0];}
     if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBADiagnostics"] boolValue]) {
         if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
         [self.logger append:line];
@@ -99,21 +110,6 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     [b setTitle:title forState:UIControlStateNormal];
     [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside]; return b;
 }
-- (UIButton *)keyButton:(NSString *)title bit:(unsigned)bit {
-    UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
-    b.tag=bit; b.exclusiveTouch=NO; b.multipleTouchEnabled=YES;
-    b.configuration=[UIButtonConfiguration filledButtonConfiguration];
-    b.configuration.baseBackgroundColor=[UIColor colorWithRed:.16 green:.2 blue:.29 alpha:1];
-    [b setTitle:title forState:UIControlStateNormal]; b.titleLabel.font=[UIFont boldSystemFontOfSize:20];
-    [b.heightAnchor constraintGreaterThanOrEqualToConstant:48].active=YES;
-    [b addTarget:self action:@selector(keyDown:) forControlEvents:UIControlEventTouchDown|UIControlEventTouchDragEnter];
-    [b addTarget:self action:@selector(keyUp:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel|UIControlEventTouchDragExit];
-    return b;
-}
-- (UIStackView *)row:(NSArray<UIView *> *)views {
-    UIStackView *s=[[UIStackView alloc] initWithArrangedSubviews:views]; s.axis=UILayoutConstraintAxisHorizontal;
-    s.spacing=10; s.distribution=UIStackViewDistributionFillEqually; return s;
-}
 - (void)viewDidLoad {
     [super viewDidLoad]; self.view.backgroundColor=UIColor.systemBackgroundColor;
     self.logURL=[[self documents] URLByAppendingPathComponent:@"game.log"];
@@ -124,37 +120,25 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         [self capture:@{@"event":@"capture_start",@"schema":@1,@"clock_scope":@"App callback boundaries, not radio timestamps",@"transport":[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"]?:@"ble"}];
         NSLog(@"Trade capture: %@",self.captureURL.path);
     }
-    self.titleLabel=[UILabel new]; self.titleLabel.text=@"mGBA · LDN"; self.titleLabel.font=[UIFont boldSystemFontOfSize:24]; self.titleLabel.numberOfLines=2;
-    self.status=[UILabel new]; self.status.numberOfLines=0; self.status.font=[UIFont systemFontOfSize:13]; self.status.textColor=UIColor.secondaryLabelColor;
-    self.screen=[UIImageView new]; self.screen.backgroundColor=UIColor.blackColor; self.screen.contentMode=UIViewContentModeScaleAspectFit;
-    self.screen.layer.magnificationFilter=kCAFilterNearest; self.screen.layer.minificationFilter=kCAFilterNearest;
-    self.screen.accessibilityLabel=@"Game screen";
-    NSLayoutConstraint *aspect=[self.screen.heightAnchor constraintEqualToAnchor:self.screen.widthAnchor multiplier:2.0/3.0];aspect.priority=750;aspect.active=YES;
-    [self.screen.heightAnchor constraintLessThanOrEqualToConstant:280].active=YES;
-    self.pauseButton=[self actionButton:@"Pause" selector:@selector(togglePause)];
-    UIStackView *top=[self row:@[[self actionButton:@"Open game" selector:@selector(openGame)],self.pauseButton]];
-    UIStackView *dpad=[[UIStackView alloc] initWithArrangedSubviews:@[
-      [self row:@[[UIView new],[self keyButton:@"↑" bit:6],[UIView new]]],
-      [self row:@[[self keyButton:@"←" bit:5],[UIView new],[self keyButton:@"→" bit:4]]],
-      [self row:@[[UIView new],[self keyButton:@"↓" bit:7],[UIView new]]]]];
-    dpad.axis=UILayoutConstraintAxisVertical; dpad.spacing=4;
-    UIStackView *ab=[[UIStackView alloc] initWithArrangedSubviews:@[[self keyButton:@"A" bit:0],[self keyButton:@"B" bit:1]]];
-    ab.axis=UILayoutConstraintAxisVertical;ab.spacing=10;ab.distribution=UIStackViewDistributionFillEqually;
-    UIStackView *controls=[self row:@[dpad,ab]];
-    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel,top,self.screen,
-      [self row:@[[self keyButton:@"L" bit:9],[self keyButton:@"R" bit:8]]],controls,
-      [self row:@[[self keyButton:@"Select" bit:2],[self keyButton:@"Start" bit:3]]],
-      [self row:@[[self actionButton:@"Import save" selector:@selector(importSave)],[self actionButton:@"Export save" selector:@selector(exportSave)]]],self.status]];
-    stack.axis=UILayoutConstraintAxisVertical; stack.spacing=10;stack.translatesAutoresizingMaskIntoConstraints=NO;
-    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.delaysContentTouches=NO;scroll.canCancelContentTouches=NO;
-    [self.view addSubview:scroll]; [scroll addSubview:stack];UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
-      [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],[scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
-      [scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:16],
-      [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-16],
-      [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],
-      [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-16],
-      [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-32]]];
+    self.recentEvents=[NSMutableArray new];
+    self.player=[[PlayerView alloc] initWithDirectory:[self documents]];self.player.translatesAutoresizingMaskIntoConstraints=NO;
+    self.screen=self.player.screen;self.titleLabel=[UILabel new];self.titleLabel.text=@"mGBA LDN";
+    __weak GameController *inputOwner=self;
+    self.player.keysChanged=^(uint32_t keys){GameController *g=inputOwner;if(g)g->_pendingKeys|=keys;};
+    [self.view addSubview:self.player];UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[[self.player.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],[self.player.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],[self.player.topAnchor constraintEqualToAnchor:safe.topAnchor],[self.player.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor]]];
+    self.view.backgroundColor=UIColor.blackColor;
+    self.menuButton=[UIButton buttonWithType:UIButtonTypeSystem];self.menuButton.translatesAutoresizingMaskIntoConstraints=NO;
+    self.menuButton.configuration=[UIButtonConfiguration tintedButtonConfiguration];self.menuButton.configuration.baseBackgroundColor=UIColor.blackColor;self.menuButton.tintColor=UIColor.whiteColor;
+    [self.menuButton setImage:[UIImage systemImageNamed:@"line.3.horizontal"] forState:UIControlStateNormal];self.menuButton.accessibilityLabel=@"Game menu";
+    self.menuButton.showsMenuAsPrimaryAction=YES;[self.view addSubview:self.menuButton];
+    self.menuButton.menu=[UIMenu menuWithChildren:@[[UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)){
+        GameController *g=inputOwner;[g clearInput];completion([g menuActions]);
+    }]]];
+    self.status=[UILabel new];self.status.translatesAutoresizingMaskIntoConstraints=NO;self.status.numberOfLines=2;self.status.font=[UIFont systemFontOfSize:12];self.status.textColor=UIColor.whiteColor;self.status.backgroundColor=[UIColor colorWithWhite:0 alpha:.6];
+    self.counters=[UILabel new];self.counters.translatesAutoresizingMaskIntoConstraints=NO;self.counters.font=[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];self.counters.textColor=UIColor.whiteColor;self.counters.backgroundColor=[UIColor colorWithWhite:0 alpha:.6];
+    [self.view addSubview:self.status];[self.view addSubview:self.counters];
+    [NSLayoutConstraint activateConstraints:@[[self.menuButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],[self.menuButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-6],[self.menuButton.widthAnchor constraintEqualToConstant:48],[self.menuButton.heightAnchor constraintEqualToConstant:40],[self.counters.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:6],[self.counters.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],[self.counters.trailingAnchor constraintLessThanOrEqualToAnchor:self.menuButton.leadingAnchor constant:-6],[self.status.leadingAnchor constraintEqualToAnchor:self.counters.leadingAnchor],[self.status.topAnchor constraintEqualToAnchor:self.counters.bottomAnchor constant:2],[self.status.trailingAnchor constraintLessThanOrEqualToAnchor:self.menuButton.leadingAnchor constant:-6]]];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(bound:) name:@"LDNRelayBound" object:self.relay];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lost:) name:@"LDNRelayLost" object:self.relay];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(datagram:) name:@"LDNRelayDatagram" object:self.relay];
@@ -167,7 +151,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         GameController *g=weakGame;if(!g || !g->_backend)return nil;
         uint8_t m[IOS_LAB_METADATA_SIZE];return IOSRelayLabAdvertisement(g->_backend,m)?[NSData dataWithBytes:m length:sizeof(m)]:nil;
     };
-    self.relay.nativeAdvertisementProvider=^NSData *{GameController *g=weakGame;if(!g || !g->_backend || g->_paused)return nil;uint8_t ad[122];return IOSRelayNativeAdvertisement(g->_backend,ad)?[NSData dataWithBytes:ad length:122]:nil;};
+    self.relay.nativeAdvertisementProvider=^NSData *{GameController *g=weakGame;if(!g || !g->_backend || g->_paused || ![g.player.settings[@"wireless"] boolValue])return nil;uint8_t ad[122];return IOSRelayNativeAdvertisement(g->_backend,ad)?[NSData dataWithBytes:ad length:122]:nil;};
     [self startAudio];
     self.display=[CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
     self.display.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);
@@ -196,14 +180,60 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     }
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-    for(UIPress *p in presses) { int bit=[self bitForPress:p];if(bit>=0)_keys|=1u<<bit;else [super pressesBegan:[NSSet setWithObject:p] withEvent:event]; }
+    for(UIPress *p in presses) { int bit=[self bitForPress:p];if(bit>=0){_keys|=1u<<bit;_pendingKeys|=1u<<bit;}else [super pressesBegan:[NSSet setWithObject:p] withEvent:event]; }
 }
 - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     for(UIPress *p in presses) { int bit=[self bitForPress:p];if(bit>=0)_keys&=~(1u<<bit);else [super pressesEnded:[NSSet setWithObject:p] withEvent:event]; }
 }
-- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { _keys=0; }
-- (void)keyDown:(UIButton *)b { _keys|=1u<<b.tag;[self capture:@{@"event":@"input",@"keys":@(_keys)}]; }
-- (void)keyUp:(UIButton *)b { _keys&=~(1u<<b.tag);[self capture:@{@"event":@"input",@"keys":@(_keys)}]; }
+- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { _keys=0;_pendingKeys=0; }
+- (void)clearInput {_keys=0;_pendingKeys=0;[self.player clearTouches];}
+- (uint32_t)controllerKeys {
+    if(self.presentedViewController || !self.view.window.isKeyWindow)return 0;
+    uint32_t keys=0;for(GCController *controller in GCController.controllers){GCExtendedGamepad *pad=controller.extendedGamepad;if(!pad)continue;
+        // Physical east = GBA A, south = GBA B, matching the Android layout.
+        if(pad.buttonB.isPressed)keys|=1<<0;if(pad.buttonA.isPressed)keys|=1<<1;
+        if(pad.buttonOptions.isPressed)keys|=1<<2;if(pad.buttonMenu.isPressed)keys|=1<<3;
+        if(pad.dpad.right.isPressed || pad.leftThumbstick.xAxis.value>.5)keys|=1<<4;
+        if(pad.dpad.left.isPressed || pad.leftThumbstick.xAxis.value<-.5)keys|=1<<5;
+        if(pad.dpad.up.isPressed || pad.leftThumbstick.yAxis.value>.5)keys|=1<<6;
+        if(pad.dpad.down.isPressed || pad.leftThumbstick.yAxis.value<-.5)keys|=1<<7;
+        if(pad.rightShoulder.isPressed)keys|=1<<8;if(pad.leftShoulder.isPressed)keys|=1<<9;
+    }return keys;
+}
+- (NSArray<UIMenuElement *> *)menuActions {
+    NSArray *titles=@[@"Open game",@"Import save",@"Export save",_paused?@"Resume":@"Pause",@"Reset game",@"Switch multiplayer",@"Wireless adapter",@"Display settings",@"Export diagnostic log",@"About"];
+    NSArray *selectors=@[@"openGame",@"importSave",@"exportSave",@"togglePause",@"resetGame",@"showMultiplayer",@"showWirelessAdapter",@"showDisplaySettings",@"exportDiagnostics",@"showAbout"];
+    NSMutableArray *actions=[NSMutableArray new];for(NSUInteger i=0;i<titles.count;i++){NSString *sel=selectors[i];UIAction *action=[UIAction actionWithTitle:titles[i] image:nil identifier:nil handler:^(UIAction *a){[UIApplication.sharedApplication sendAction:NSSelectorFromString(sel) to:self from:nil forEvent:nil];}];if(!_core && i>=1 && i<=4)action.attributes=UIMenuElementAttributesDisabled;[actions addObject:action];}return actions;
+}
+- (void)resetGame {
+    if(self.relay.joined){[self record:@"Disconnect multiplayer before resetting the game."];return;}
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Reset game?" message:@"Progress since your last in-game save will be lost." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){if(self.romURL)[self loadROM:self.romURL];}]];[self presentViewController:a animated:YES completion:nil];
+}
+- (void)showWirelessAdapter {
+    if(self.relay.joined){[self record:@"Disconnect multiplayer before changing the wireless adapter."];return;}
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Wireless adapter" message:@"Changing adapters restarts the game from its last in-game save. Switch relay uses Bluetooth to a modified Switch; Off plays without a GBA wireless adapter." preferredStyle:UIAlertControllerStyleActionSheet];
+    for(NSNumber *enabled in @[@NO,@YES]){UIAlertAction *option=[UIAlertAction actionWithTitle:enabled.boolValue?@"Switch relay":@"Off" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){self.player.settings[@"wireless"]=enabled;[self.player saveSettings];if(self.romURL)[self loadROM:self.romURL];[self record:enabled.boolValue?@"Wireless adapter: Switch relay":@"Wireless adapter: off"];}];[a addAction:option];}
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.menuButton;a.popoverPresentationController.sourceRect=self.menuButton.bounds;[self presentViewController:a animated:YES completion:nil];
+}
+- (void)showMultiplayer {
+    if(![self.player.settings[@"wireless"] boolValue]){[self record:@"Choose Wireless adapter → Switch relay in the game menu first."];return;}
+    [self clearInput];self.relay.title=@"Switch multiplayer";self.relay.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Play" style:UIBarButtonItemStyleDone target:self action:@selector(closePanel)];
+    UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:self.relay];nav.modalPresentationStyle=UIModalPresentationFullScreen;[self presentViewController:nav animated:YES completion:nil];
+}
+- (void)closePanel {[self dismissViewControllerAnimated:YES completion:^{[self becomeFirstResponder];}];}
+- (void)showDisplaySettings {[self clearInput];UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:[self.player settingsController]];[self presentViewController:nav animated:YES completion:nil];}
+- (void)exportDiagnostics {
+    NSString *report=[NSString stringWithFormat:@"mGBA LDN %@\nRecent game events (no ROM, save or packet capture).\n%@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[self.recentEvents componentsJoinedByString:@""]];
+    report=[report stringByReplacingOccurrencesOfString:[self documents].path withString:@"<app data>"];
+    NSURL *url=[[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:@"mGBA-LDN-diagnostics.txt"];NSError *error=nil;
+    if(![report writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]){[self record:error.localizedDescription];return;}
+    [self presentViewController:[[UIDocumentPickerViewController alloc] initForExportingURLs:@[url] asCopy:YES] animated:YES completion:nil];
+}
+- (void)showAbout {
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"mGBA LDN" message:@"Apple frontend by veritr1x. Based on mGBA and Gr3nSkyDragon's mGBA LDN, with controls and display options adapted from its Android frontend.\n\nSwitch multiplayer uses LDN Relay with approval on the modified Switch. FireRed / LeafGreen only; one guest.\n\nKeyboard: arrows, Z = A, X = B, Return = Start, right Shift = Select, A = L, S = R.\nGamepad: east = A, south = B, shoulders = L/R, Menu = Start, Options = Select.\n\nSource and licenses are included in the download. No games are bundled." preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:a animated:YES completion:nil];
+}
 - (void)startAudio {
     NSError *error=nil;
     [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:0 error:&error];
@@ -300,18 +330,22 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     GBASIORFUCreate(&_rfu,_backend);
     NSURL *trace=self.captureURL?[[self.captureURL URLByDeletingPathExtension] URLByAppendingPathExtension:@"rfu.log"]:[[self documents] URLByAppendingPathComponent:@"rfu.log"];
     if([NSProcessInfo.processInfo.arguments containsObject:@"--trace-rfu"]) GBASIORFUSetTraceFile(&_rfu,trace.fileSystemRepresentation);
-    _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,&_rfu.d);_attached=YES;
+    _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,[self.player.settings[@"wireless"] boolValue]?&_rfu.d:NULL);_attached=YES;
     _stream.rate=_core->audioSampleRate(_core);_phase=_sumL=_sumR=0;_samples=0;
-    _frames=0;_keys=0;_lastTime=0;_accumulator=0;_paused=NO;
+    _frames=0;[self clearInput];_previousValid=NO;_fpsTime=0;_fpsFrames=0;_lastTime=0;_accumulator=0;_paused=NO;
     [self.pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
     NSString *relative=[url.path substringFromIndex:[self documents].path.length+1];
     if(![NSProcessInfo.processInfo.arguments containsObject:@"--data-dir"])[NSUserDefaults.standardUserDefaults setObject:relative forKey:@"lastROM"];
     self.titleLabel.text=url.lastPathComponent.stringByDeletingPathExtension;
-    [self record:@"Ready to play. Use the game's save menu; Export save makes a copy for other emulators."];
+    [self record:@"Ready"];
     return YES;
 }
 - (void)tick:(CADisplayLink *)display {
-    if(!_core || _paused) { _lastTime=0;return; }
+    self.status.hidden=![self.player.settings[@"relayStatus"] boolValue];
+    if(!_core || _paused) { _lastTime=0;self.counters.text=_paused?@"Paused":@"Open game from the menu ☰";return; }
+    if(!_fpsTime)_fpsTime=display.timestamp;
+    if(display.timestamp-_fpsTime>=.5){NSMutableArray *parts=[NSMutableArray new];if([self.player.settings[@"fps"] boolValue])[parts addObject:[NSString stringWithFormat:@"%.1f FPS",(_frames-_fpsFrames)/(display.timestamp-_fpsTime)]];if([self.player.settings[@"counter"] boolValue])[parts addObject:[NSString stringWithFormat:@"Frame %u",_frames]];self.counters.text=[parts componentsJoinedByString:@" · "];_fpsTime=display.timestamp;_fpsFrames=_frames;}
+
     if(!_lastTime) _lastTime=display.timestamp;
     _accumulator+=MIN(display.timestamp-_lastTime,0.05);_lastTime=display.timestamp;
     const double frameTime=280896.0/16777216.0;
@@ -324,12 +358,15 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
              * catch-up frames while the peer is applying backpressure. */
             _accumulator=0;break;
         }
-        _core->setKeys(_core,_keys);_core->runFrame(_core);
+        uint32_t input=_keys|self.player.touchKeys|_pendingKeys|[self controllerKeys];_pendingKeys=0;
+        _core->setKeys(_core,input);_core->runFrame(_core);
+        BOOL blend=[self.player.settings[@"blend"] boolValue];
+        MPDisplayFrame((const uint8_t *)_pixels,_displayPixels,_previousPixels,240*160,blend,_previousValid,[self.player.settings[@"colorMode"] intValue],[self.player.settings[@"saturation"] doubleValue]/100);_previousValid=blend;
         [self drainAudio];++_frames;rendered=YES;
         if(_frames%600==0) [self save];
     }
     if(!rendered) return;
-    NSData *pixels=[NSData dataWithBytes:_pixels length:sizeof(_pixels)];
+    NSData *pixels=[NSData dataWithBytes:_displayPixels length:sizeof(_displayPixels)];
     CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
     CGColorSpaceRef color=CGColorSpaceCreateDeviceRGB();
     CGImageRef cg=CGImageCreate(240,160,8,32,240*4,color,kCGBitmapByteOrder32Big|kCGImageAlphaNoneSkipLast,provider,NULL,false,kCGRenderingIntentDefault);
@@ -345,7 +382,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 }
 - (void)togglePause {
     if(!_core) return;
-    _paused=!_paused;_keys=0;_lastTime=0;
+    _paused=!_paused;[self clearInput];_lastTime=0;_fpsTime=0;_fpsFrames=_frames;
     if(_paused) { [self save]; if(self.relay.joined) [self.relay leave];IOSRelayStop(_backend);[self.audio pause]; }
     else { [self.audio startAndReturnError:nil]; }
     [self.pauseButton setTitle:_paused?@"Resume":@"Pause" forState:UIControlStateNormal];
@@ -354,7 +391,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     #if !TARGET_OS_MACCATALYST
     if(_core && !_paused) [self togglePause];
 #else
-    [self save]; _keys=0;
+    [self save]; [self clearInput];
 #endif
 }
 - (void)active:(NSNotification *)note { /* User resumes explicitly; never silently resume a stale multiplayer session. */ }
@@ -365,7 +402,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
         NSData *rom=[NSData dataWithContentsOfURL:self.romURL],*save=[NSData dataWithContentsOfURL:self.saveURL];uint8_t digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(rom.bytes,(CC_LONG)rom.length,digest);NSMutableString *hash=[NSMutableString new];for(unsigned i=0;i<sizeof(digest);i++)[hash appendFormat:@"%02x",digest[i]];
         [self capture:@{@"event":@"session_start",@"metadata_b64":[metadata base64EncodedStringWithOptions:0]?:@"",@"rom_sha256":hash,@"save_b64":[save base64EncodedStringWithOptions:0]?:@"",@"save_scope":@"Last persisted save; not an emulator savestate"}];self.captureSession=YES;
     }
-    if(!_core || _paused || !( [note.userInfo[@"lab"] boolValue]?IOSRelayConfigureLab(_backend,metadata.bytes,metadata.length,[note.userInfo[@"host"] boolValue],monotonicMs()):[note.userInfo[@"nativeHost"] boolValue]?IOSRelayConfigureNativeHost(_backend,metadata.bytes,metadata.length,monotonicMs()):IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs()))) {
+    if(!_core || _paused || ![self.player.settings[@"wireless"] boolValue] || !( [note.userInfo[@"lab"] boolValue]?IOSRelayConfigureLab(_backend,metadata.bytes,metadata.length,[note.userInfo[@"host"] boolValue],monotonicMs()):[note.userInfo[@"nativeHost"] boolValue]?IOSRelayConfigureNativeHost(_backend,metadata.bytes,metadata.length,monotonicMs()):IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs()))) {
         [self record:@"Load and resume FireRed before joining. Relay metadata must describe an FRLG host."];
         [self.relay leave];
     }
@@ -383,7 +420,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     _importingSave=save;
     if(save && !_core) { [self record:@"Load the ROM that this save belongs to first."];return; }
     UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
-    picker.delegate=self;[self presentViewController:picker animated:YES completion:nil];
+    picker.delegate=self;picker.allowsMultipleSelection=!save;[self presentViewController:picker animated:YES completion:nil];
 }
 - (void)importROM { [self pickerForSave:NO]; }
 - (void)importSave { [self pickerForSave:YES]; }
@@ -397,7 +434,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     [roms sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];}];
     for(NSURL *rom in roms)[menu addAction:[UIAlertAction actionWithTitle:rom.lastPathComponent.stringByDeletingPathExtension style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self loadROM:rom];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    menu.popoverPresentationController.sourceView=self.titleLabel;menu.popoverPresentationController.sourceRect=self.titleLabel.bounds;
+    menu.popoverPresentationController.sourceView=self.menuButton;menu.popoverPresentationController.sourceRect=self.menuButton.bounds;
     [self presentViewController:menu animated:YES completion:nil];
 }
 - (void)importROMURL:(NSURL *)url {
@@ -432,7 +469,7 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
             }]];
             [self presentViewController:confirm animated:YES completion:nil];
         }
-    } else [self importROMURL:url];
+    } else {for(NSURL *rom in urls){BOOL scoped=[rom startAccessingSecurityScopedResource];[self importROMURL:rom];if(scoped)[rom stopAccessingSecurityScopedResource];}}
     if(access) [url stopAccessingSecurityScopedResource];
 }
 - (void)exportSave {
@@ -453,8 +490,8 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     if(![scene isKindOfClass:UIWindowScene.class])return;
     RelayController *relay=[RelayController new];relay.tabBarItem=[[UITabBarItem alloc] initWithTitle:@"Multiplayer" image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"] tag:1];
     GameController *game=[GameController new];game.relay=relay;game.tabBarItem=[[UITabBarItem alloc] initWithTitle:@"Play" image:[UIImage systemImageNamed:@"gamecontroller"] tag:0];
-    UITabBarController *tabs=[UITabBarController new];tabs.viewControllers=@[game,relay];
-    self.window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];self.window.rootViewController=tabs;[self.window makeKeyAndVisible];
+
+    self.window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];self.window.rootViewController=game;[self.window makeKeyAndVisible];
 }
 @end
 @interface AppDelegate : UIResponder <UIApplicationDelegate>

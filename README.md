@@ -5,10 +5,10 @@ FireRed / LeafGreen with a stock Switch or Switch 2 through
 [LDN Relay](https://github.com/veritr1x/ldn-relay) on a modified Switch.
 
 1. [Download a release](https://github.com/veritr1x/mgba-ldn-ios-macos/releases):
-   the **IPA** for iOS sideloading, or the **macOS ZIP** for Mac.
-2. Open the app, choose **Open game**, and import your `.gba` ROM.
+   the **IPA** for iOS sideloading, or the **macOS ZIP** for Mac. The matching **Switch NRO** is included too.
+2. Open the app, choose **☰ → Open game**, and import your `.gba` ROM.
 3. Use **Import save** / **Export save** for raw `.sav` files.
-4. For trading, open **Multiplayer**, connect and approve the companion on
+4. For trading, open **☰ → Switch multiplayer**, connect and approve the companion on
    the modified Switch, then host or join a game.
 
 [Installation, trading and building](src/platform/ios-ldn/README.md)
@@ -23,6 +23,9 @@ Based on [Gr3nSkyDragon/mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)
 and [mGBA](https://github.com/mgba-emu/mgba). Their code, credits and licences
 remain intact. The Apple relay route does not need `prod.keys` or an ESP32.
 The original upstream instructions below describe other platforms.
+
+The player has Android-style touch controls, display effects and custom backgrounds.
+Open **☰ → Display settings** to customize it. [Android feature comparison](src/platform/ios-ldn/ANDROID_PARITY.md).
 
 ---
 

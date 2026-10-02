@@ -63,7 +63,7 @@ info={
  'LDNRelayAckDelayMs':5, 'LDNRelaySendWindow':3, 'LDNRelayNotificationPaceMs':5,
  'CFBundleIdentifier':a.bundle_id or 'dev.local.mgba-ldn'+('.mac' if is_mac else ''),
  'CFBundleExecutable':'mGBALDN','CFBundleName':'mGBA LDN','CFBundleDisplayName':'mGBA LDN',
- 'CFBundlePackageType':'APPL','CFBundleVersion':'600','CFBundleShortVersionString':version,
+ 'CFBundlePackageType':'APPL','CFBundleVersion':'700','CFBundleShortVersionString':version,
  'CFBundleInfoDictionaryVersion':'6.0','CFBundleSupportedPlatforms':['MacOSX' if is_mac else 'iPhoneOS'],
  'UIDeviceFamily':[2] if is_mac else [1,2],'UILaunchScreen':{},
  'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'],
@@ -82,7 +82,7 @@ if is_mac: info['LSMinimumSystemVersion']='14.0'
 else: info.update(MinimumOSVersion='17.0',LSRequiresIPhoneOS=True)
 (contents/'Info.plist').write_bytes(plistlib.dumps(info))
 ldn=root/'src/gba/sio/ldn'
-sources=[src/'main.m',src/'GameFiles.m',src/'RelayController.m',src/'relay-backend.c',src/'pia-host.c',src/'LabCentral.m',src/'apple-crypto.c',src/'relay/relay_codec.c',src/'relay/relay_stream.c',src/'relay/LRTransport.m',src/'relay/LRLog.m',
+sources=[src/'main.m',src/'GameFiles.m',src/'PlayerView.m',src/'RelayController.m',src/'relay-backend.c',src/'pia-host.c',src/'LabCentral.m',src/'apple-crypto.c',src/'relay/relay_codec.c',src/'relay/relay_stream.c',src/'relay/LRTransport.m',src/'relay/LRLog.m',
  ldn/'ldn-pia.c',ldn/'ldn-pia-connect.c',ldn/'ldn-pia-reliable.c',ldn/'trade-shim.c',root/'src/third-party/zstd/zstdlib.c']
 common=flags+defines+['-I'+str(root/'include'),'-I'+str(root/'build/ios-core/include'),'-I'+str(root/'src'),'-I'+str(ldn),'-I'+str(src/'relay'),'-O2','-ffile-prefix-map='+str(root)+'=.','-fdebug-prefix-map='+str(root)+'=.','-fwrapv','-Wall','-Wextra','-Wno-unused-parameter','-Wno-deprecated-declarations']
 objs=[]
@@ -90,7 +90,7 @@ for i,source in enumerate(sources):
  obj=out/f'app-{i}.o';objc=['-fobjc-arc','-fmodules'] if source.suffix=='.m' else ['-std=c11']
  subprocess.run(['xcrun','--sdk',sdkname,'clang',*common,*objc,'-c',str(source),'-o',str(obj)],check=True)
  objs.append(str(obj))
-frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics','Security']
+frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics','Security','GameController','ImageIO']
 link=['xcrun','--sdk',sdkname,'clang',*flags,*objs,str(archive),'-lz','-lm','-o',str(binary)]
 for f in frameworks: link+=['-framework',f]
 if is_mac: link+=['-Wl,-rpath,/System/iOSSupport/System/Library/Frameworks']

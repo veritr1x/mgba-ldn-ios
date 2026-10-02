@@ -7,6 +7,8 @@ import argparse, concurrent.futures, datetime, hashlib, json, plistlib, shlex, s
 p=argparse.ArgumentParser()
 p.add_argument('--platform',choices=['ios','mac'],default='ios')
 p.add_argument('--profile',type=Path)
+p.add_argument('--usb',action='store_true',help='Mac companion via local USB bridge')
+p.add_argument('--lab-host',action='store_true',help='Experimental Mac Pia/RFU host over BLE')
 p.add_argument('--skip-core',action='store_true')
 a=p.parse_args()
 root=Path(__file__).resolve().parents[3]; src=root/'src/platform/ios-ldn'
@@ -21,7 +23,8 @@ flags=['-target',target,'-isysroot',str(sdk)]
 if is_mac:
  support=sdk/'System/iOSSupport'; frameworks=support/'System/Library/Frameworks'
  flags+=['-isystem',str(support/'usr/include'),'-iframework',str(frameworks),'-F',str(frameworks),'-L',str(support/'usr/lib')]
-out=root/'build'/('player-mac' if is_mac else 'player-ios');out.mkdir(parents=True,exist_ok=True)
+assert not a.lab_host or (is_mac and not a.usb), 'Host lab is Mac BLE only'
+out=root/'build'/('player-mac-host-lab-v0.5.0' if a.lab_host else 'player-mac-usb-v0.5.0' if is_mac and a.usb else 'player-mac-v0.5.0' if is_mac else 'player-ios-v0.5.0');out.mkdir(parents=True,exist_ok=True)
 app=out/'mGBA LDN.app'
 # Recreate only the generated bundle; avoid stale signatures/profiles in unsigned output.
 if app.exists(): shutil.rmtree(app)
@@ -47,9 +50,11 @@ if is_mac and (not a.skip_core or not (out/'libmgba-catalyst.a').exists()):
  subprocess.run(['xcrun','libtool','-static','-o',str(archive),*objs],check=True)
 if is_mac: archive=out/'libmgba-catalyst.a'
 info={
+ 'LDNRelayCaptureTrade':not is_mac, # Diagnostic phone builds also record manual launches.
+ 'LDNRelayAckDelayMs':5, 'LDNRelaySendWindow':3, 'LDNRelayNotificationPaceMs':5,
  'CFBundleIdentifier':'dev.local.mgba-ldn'+('.mac' if is_mac else ''),
  'CFBundleExecutable':'mGBALDN','CFBundleName':'mGBA LDN','CFBundleDisplayName':'mGBA LDN',
- 'CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'0.1.0',
+ 'CFBundlePackageType':'APPL','CFBundleVersion':'3','CFBundleShortVersionString':'0.5.0',
  'CFBundleInfoDictionaryVersion':'6.0','CFBundleSupportedPlatforms':['MacOSX' if is_mac else 'iPhoneOS'],
  'UIDeviceFamily':[2] if is_mac else [1,2],'UILaunchScreen':{},
  'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'],
@@ -57,11 +62,18 @@ info={
  'NSBluetoothAlwaysUsageDescription':'Connect to your modified Switch to play local multiplayer through LDN Relay.',
  'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneConfigurationName':'Game','UISceneDelegateClassName':'SceneDelegate'}]}}
 }
+if a.lab_host:
+ info['MGBALabHost']=True
+ info['CFBundleIdentifier']='dev.local.mgba-ldn.hostlab'
+ info['CFBundleDisplayName']='mGBA Host Lab'
+if a.usb:
+ assert is_mac,'USB companion currently requires Mac'
+ info['LDNRelayTransport']='usb'
 if is_mac: info['LSMinimumSystemVersion']='14.0'
 else: info.update(MinimumOSVersion='17.0',LSRequiresIPhoneOS=True)
 (contents/'Info.plist').write_bytes(plistlib.dumps(info))
 ldn=root/'src/gba/sio/ldn'
-sources=[src/'main.m',src/'RelayController.m',src/'relay-backend.c',src/'apple-crypto.c',src/'relay/relay_codec.c',
+sources=[src/'main.m',src/'RelayController.m',src/'relay-backend.c',src/'pia-host.c',src/'LabCentral.m',src/'apple-crypto.c',src/'relay/relay_codec.c',src/'relay/relay_stream.c',src/'relay/LRTransport.m',src/'relay/LRLog.m',
  ldn/'ldn-pia.c',ldn/'ldn-pia-connect.c',ldn/'ldn-pia-reliable.c',ldn/'trade-shim.c',root/'src/third-party/zstd/zstdlib.c']
 common=flags+defines+['-I'+str(root/'include'),'-I'+str(root/'build/ios-core/include'),'-I'+str(root/'src'),'-I'+str(ldn),'-I'+str(src/'relay'),'-O2','-fwrapv','-Wall','-Wextra','-Wno-unused-parameter','-Wno-deprecated-declarations']
 objs=[]
@@ -69,7 +81,7 @@ for i,source in enumerate(sources):
  obj=out/f'app-{i}.o';objc=['-fobjc-arc','-fmodules'] if source.suffix=='.m' else ['-std=c11']
  subprocess.run(['xcrun','--sdk',sdkname,'clang',*common,*objc,'-c',str(source),'-o',str(obj)],check=True)
  objs.append(str(obj))
-frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics']
+frameworks=['UIKit','Foundation','CoreBluetooth','AVFoundation','UniformTypeIdentifiers','CoreGraphics','Security']
 link=['xcrun','--sdk',sdkname,'clang',*flags,*objs,str(archive),'-lz','-lm','-o',str(binary)]
 for f in frameworks: link+=['-framework',f]
 if is_mac: link+=['-Wl,-rpath,/System/iOSSupport/System/Library/Frameworks']

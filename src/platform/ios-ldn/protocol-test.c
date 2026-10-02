@@ -10,19 +10,21 @@
 #include <string.h>
 static unsigned sent, accepted, disconnected, beacons;
 static bool writable=true;
+static unsigned queueFailures;
 static uint8_t packets[64][1400];static size_t sizes[64];
 static bool send(void *ctx,const uint8_t ip[4],const uint8_t *p,size_t n) {
     (void)ctx;assert(ip[3]==1);assert(n<=1400);assert(sent<64);
     memcpy(packets[sent],p,n);sizes[sent++]=n;return true;
 }
 static bool canSend(void *ctx) { (void)ctx;return writable; }
-static void logMessage(void *ctx,const char *s) { (void)ctx;puts(s); }
+static void logMessage(void *ctx,const char *s) { (void)ctx;if(strstr(s,"full") || strstr(s,"overflow"))queueFailures++;if(strncmp(s,"TRACE ",6))puts(s); }
 void GBASIORFUConnectResult(struct GBASIORFU *r,bool ok,uint16_t id,unsigned slot) { (void)r;(void)id;(void)slot;if(ok)++accepted; }
 void GBASIORFUDisconnected(struct GBASIORFU *r,int slot) { (void)r;(void)slot;++disconnected; }
 void GBASIORFUDataReceived(struct GBASIORFU *r,unsigned slot,const uint8_t *p,size_t n) { (void)r;(void)slot;(void)p;(void)n; }
 void GBASIORFUBroadcastReceived(struct GBASIORFU *r,uint16_t id,uint8_t next,const uint32_t words[6]) {
     (void)r;(void)next;assert(id==0x1234);assert(words[0]==0x13820002);++beacons;
 }
+void GBASIORFUConnectRequested(struct GBASIORFU *r,uint16_t id) { (void)r;(void)id;assert(!"Switch join backend must not host"); }
 static void cryptoTest(void) {
     const uint8_t cipherExpected[16]={0x03,0x88,0xda,0xce,0x60,0xb6,0xa3,0x92,0xf3,0x28,0xc2,0xb9,0x71,0xb2,0xfe,0x78};
     const uint8_t tagExpected[16]={0xab,0x6e,0x47,0xd4,0x2c,0xec,0x13,0xbd,0xf5,0x3a,0x67,0xb2,0x12,0x57,0xbd,0xdf};
@@ -61,8 +63,24 @@ static void host(struct GBASIORFUBackend *b,uint8_t proto,const uint8_t *p,size_
     uint8_t ip[4]={169,254,1,1};assert(LdnPiaEncrypt(&crypto,tiled,length,ip,&h,datagram,&size));
     IOSRelayReceive(b,ip,datagram,size);
 }
+static void receiveWindowTest(void) {
+    struct LdnPiaReliable r;struct LdnPiaReliableEntry out[128];uint8_t p=42;
+    LdnPiaReliableInit(&r,33,1000);r.peerOpened=true;r.recvNext=100;
+    struct LdnPiaReliableFrame f={.flagsA=7,.seq=101,.payload=&p,.payloadLength=1};
+    assert(!LdnPiaReliableReceive(&r,&f,0,out,128));
+    assert(LdnPiaReliablePoll(&r,40,out,128)==1);
+    uint16_t ack;uint8_t mask[16];assert(LdnPiaParseBulkAck(out[0].payload,out[0].length,&ack,mask));assert(ack==100 && (mask[0]&1));
+    f.seq=229;assert(!LdnPiaReliableReceive(&r,&f,41,out,128));assert(r.recvBuf[101%128].seq==101);
+    f.seq=228;assert(!LdnPiaReliableReceive(&r,&f,42,out,128));assert(!r.recvBuf[100%128].used);
+    f.seq=100;assert(LdnPiaReliableReceive(&r,&f,43,out,128)==2);assert(out[0].seq==100 && out[1].seq==101);
+    LdnPiaReliableInit(&r,33,1000);r.peerOpened=true;r.recvNext=65535;
+    f.seq=0;assert(!LdnPiaReliableReceive(&r,&f,0,out,128));f.seq=65535;
+    assert(!LdnPiaReliableReceive(&r,&f,1,out,0));assert(r.recvNext==65535);
+    assert(LdnPiaReliableReceive(&r,&f,2,out,128)==2 && r.recvNext==1);
+    puts("PASS receive-window collision, upper bound, prior ACK preservation, output backpressure, sequence wrap");
+}
 int main(void) {
-    cryptoTest();
+    cryptoTest();receiveWindowTest();
     uint8_t p[512],ssid[16];size_t n=metadata(p);for(unsigned i=0;i<16;++i)ssid[i]=i;
     LdnPiaCryptoInit(&crypto,ssid);
     struct GBASIORFU rfu={0};struct GBASIORFUBackend *b=IOSRelayCreate(send,canSend,logMessage,NULL);assert(b);rfu.backend=b;assert(b->init(b,&rfu));
@@ -98,7 +116,7 @@ int main(void) {
     bool sawAck=false,sawK=false;unsigned tiles=0;
     for(unsigned i=before;i<sent;++i) {
         uint8_t plain[1400],decoded[8192];size_t pl,dl=sizeof(decoded),used;
-        assert(sizes[i]+26<=500); // Relay command + codec overhead also fits.
+        assert(sizes[i]+34<=500); // Relay command + codec overhead also fits.
         assert(LdnPiaDecrypt(&crypto,packets[i],sizes[i],ip,plain,&pl));
         assert(LdnPiaDecompress(plain,pl,decoded,&dl));
         struct LdnPiaMessage m[32];size_t count=LdnPiaParseMessages(decoded,dl,m,32,&used);assert(count<=32);
@@ -112,6 +130,20 @@ int main(void) {
     // With no incoming ACK, an ordinary frame must not retry every emulator tick.
     before=sent;IOSRelayTick(b,1634);IOSRelayTick(b,1651);assert(sent==before);
     puts("PASS BLE backpressure, batched ACK/game frames, tile flags, single BLE frame budget, retry pacing");
+    // Full reliable send window must defer K acknowledgements, not kill the session.
+    writable=false;
+    for(unsigned i=0;i<160;i++){
+        lr_put32(game+4,i+2);
+        length=LdnPiaBuildReliableFrame((uint16_t)(0xfff2+i),0xfff0,7,game,sizeof(game),reliable);
+        host(b,10,reliable,length);
+    }
+    IOSRelayTick(b,1700);assert(!disconnected && !queueFailures);
+    // A cumulative ACK releases slots and lets the pending K FIFO drain.
+    uint8_t ackPayload[20],mask[16]={0};LdnPiaBuildBulkAck(0x0070,mask,ackPayload);
+    length=LdnPiaBuildReliableFrame(0xfff0,0xfff0,0,ackPayload,20,reliable);host(b,10,reliable,length);
+    IOSRelayTick(b,1717);assert(!disconnected && !queueFailures);
+    writable=true;IOSRelayTick(b,1734);assert(!disconnected && !queueFailures);
+    puts("PASS K acknowledgements defer at full reliable window and resume after ACK without disconnect");
     IOSRelayTick(b,20000);assert(disconnected==1);
     b->deinit(b);assert(b->init(b,&rfu));assert(IOSRelayConfigure(b,p,n,21000));b->deinit(b);free(b);
     puts("PASS metadata bounds, Pia handshake, encrypted replies, host acceptance gate, duplicate suppression, timeout");

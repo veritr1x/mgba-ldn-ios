@@ -9,7 +9,7 @@ This is a personal, AI-assisted port based on Gr3nSkyDragon/mgba_LDN commit
 stock Switch 2 session through the relay, authenticates Pia packets, completes
 the Pia handshake, and receives the game's RFU acceptance and game frames.
 A complete trade has not succeeded.** The latest completed hardware attempt
-disconnected shortly after game acceptance. BLE traffic pacing is under test.
+disconnected shortly after game acceptance. BLE traffic pacing is under test. In the 0.2.2 game run, reliable-window occupancy reached 40/128 with no pending K acknowledgements; BLE retries rose when gameplay began. The 0.2.3 acknowledgement-progress retry fix is locally regression-tested and awaits a fresh trade attempt.
 The iOS app builds and signs, but physical iPhone/iPad gameplay is unverified.
 
 ## Runtime
@@ -118,3 +118,47 @@ save reload remain required.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for provenance and licensing. The relay's
 MIT licence does not relicense mGBA-derived code.
+
+Experimental Mac↔iPhone hosting and trade recording: [Host lab guide](HOST-LAB.md).
+
+### iPhone hosting preview (0.4.0)
+
+Requires LDN Relay 0.4.0 on the modified Switch. The iPhone runs the ROM and Pia/RFU host; the relay creates the native LDN room. One guest is supported in this preview.
+
+1. Open the game app on iPhone and the relay through Album on the modified Switch; press A to connect Bluetooth.
+2. On the iPhone Relay tab, tap **Host from this game**. In the running FireRed/LeafGreen ROM, choose Direct Corner → Become Leader. A room is created only after the ROM supplies RFU host metadata.
+3. Keep the iPhone app visible. On stock Switch 2, choose Direct Corner → Join Group.
+4. Leave the relay room before switching roles. Existing **Scan sessions** / joining remains available.
+
+Room advertisements are built from the live RFU trainer/name/activity/session data, with updates during the session. The host learns the authenticated guest's Pia variable while checking its native IP/MAC. Membership changes configure or stop the host session. Waiting in an empty room does not start a Pia timeout.
+
+Validation: sanitized tests cover advertisement fields, malformed requests/metadata, real-address encrypted host/client handshake, RFU acceptance, duplicate membership, transport backpressure and existing join regressions. This does not prove a stock Switch can complete a trade. Unknown Switch-only advertisement flags remain zero, and the experimental host runs original RFU slots without the join-side post-trade wrapper shim; these remain hardware compatibility risks.
+
+#### Host handshake correction (iPhone 0.4.1, relay remains 0.4.0)
+
+The first hardware hosting run created the room and admitted Switch 2 at LDN level twice. The relay sent 32 UDP datagrams, received none, and recorded zero drops/retries. The initial Pia host probe differed from the native protocol: whole-SSID CRC instead of CRC32 of SSID bytes 1–15, zero source variable, raw MAC instead of permuted constant ID, and six station slots instead of the configured two. Those fields are corrected. Session updates use the session pseudo-station destination and precede the join response; authenticated guest constant IDs are learned separately from physical LDN MACs, and UTF-16 player names up to 40 bytes are accepted.
+
+The encrypted native-host test now checks the Net header source, CRC, constant ID, station table and source-IP authentication explicitly. Prior emulator-pair tests were insufficient: the emulated joiner did not validate those Net fields. Physical handshake/trade verification remains pending.
+
+Reference: [pokeldn native host framing](https://github.com/Decryptu/pokeldn/blob/main/pokeldn/ldn/host_pia.py) and [Pia connection builders](https://github.com/Decryptu/pokeldn/blob/main/pokeldn/ldn/pia_connect.py).
+
+
+### Switch approval preview (0.5.0)
+
+This build uses LDN Relay 0.5.0's key-free approval transport. No pairing.key or
+Keychain import is required. Start discovery on the Switch with A, then release
+and press A again at its approval prompt. B rejects; approval expires after
+60 seconds and must be repeated for every connection. Keep this companion open
+and close other advertising relay apps during discovery.
+
+Approval is local authorization, not cryptographic identity verification or
+encryption. Older paired BLE relays and the Mac host-lab central need a matching
+transport update; do not assume compatibility. Mac USB mode is unchanged.
+Existing keys are ignored and left available for rollback.
+
+The shared transport retains same-session read recovery and notification
+resumption. The game protocol/save-barrier code is unchanged. The user reports
+multiple completed trades with 0.4.8 and now confirms a working trade on the
+key-free 0.5.0 setup. The latest report is user verification, not an independently
+inspected trade capture or post-reload save check. The working 0.4.8 signed app is retained for rollback. No ROMs or saves
+are included in the build. Current iPhone data was backed up before updating.

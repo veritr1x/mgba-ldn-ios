@@ -6,6 +6,8 @@
 #include "ldn-pia-connect.h"
 #include "ldn-pia-reliable.h"
 #include "trade-shim.h"
+#include "pia-host.h"
+#include "host-trade-shim.h"
 #include "relay/relay_protocol.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -38,6 +40,14 @@ static uint16_t _nextPktid(struct PiaPktids* ids, uint16_t dst) {
 struct IOSRelay {
 	struct GBASIORFUBackend d;
 	struct GBASIORFU *rfu;
+    bool labMode, labHost, labAdvertising, nativeHostEnabled, nativeHost;
+    bool nativeAcceptPending, nativeConnectSeen, nativeConnectAcked;
+    uint16_t nativeConnectNext;
+    uint8_t labSSID[16], labNextSlot;
+    uint16_t labDeviceId, labClientId;
+    uint32_t labWords[6];
+    struct PiaHost host;
+    bool labConnectPending;
 	struct LdnPiaCrypto piaCrypto;
 	struct LdnPiaConnect piaConn;
 	struct LdnPiaReliable* piaReliable; // heap-allocated - too large for an inline struct member (see the project notes)
@@ -46,11 +56,14 @@ struct IOSRelay {
 	uint8_t piaHostMac[6];
 	uint8_t piaOurIp[4];
 	uint8_t piaHostIp[4];
+	uint8_t piaBroadcastIp[4];
 	uint16_t piaHostVar; // mirrors ldn-pia-join.c's PiaSender.hostVar - resynced from piaConn.hostVar once known
 	uint64_t piaNonceCounter;
 	struct PiaPktids piaPktids;
 	unsigned piaTick;
     bool reliableUnsent[LDN_PIA_RELIABLE_MAX_INFLIGHT];
+    uint32_t pendingK[256];unsigned pendingKHead,pendingKCount;
+    uint32_t windowLogAt;
 
 	// Emulator-frame layer on top of the Reliable stream (see _gba* helpers): the Switch host does not understand raw
 	// RFU bytes, only `57 <type> <len:u16 LE> <body>` frames - a 'C' connect request from us, its 'A' accept, 'T' slot
@@ -67,6 +80,7 @@ struct IOSRelay {
 	// Adapter and the RFU Cable Wrapper alike (the wrapper's wireless side is a retail-like child). Reset for each
 	// session, and owned by the emulation thread like the rest of the session.
 	struct LdnTradeShim piaShim;
+    struct HostTradeShim hostTrade;
 
 	// Child frames waiting for the Switch. The Switch's game takes about one child frame per datagram it sends and validates
 	// a mod-8 sequence tag on every command, so a burst (the wrapper answers a backlog of host frames all at once) or a
@@ -78,6 +92,8 @@ struct IOSRelay {
 		uint16_t length;
 	} piaOut[64];
 	int piaOutHead, piaOutCount;
+    unsigned nativeRfuCoalesced, nativeRfuQueuePeak;
+    unsigned nativeHeldFrames;
 	uint8_t piaLastQueued[128];
 	uint16_t piaLastQueuedLength;
 	uint8_t piaIdle[128];
@@ -94,6 +110,11 @@ struct IOSRelay {
     void *user;
     struct LdnRfuBeacon beacon;
     unsigned received, decrypted, rejected, transmitted;
+    struct {
+        uint64_t raw, packed, wire, compressed, rxWire;
+        unsigned txBins[6], rxBins[6];
+    } sizes;
+    uint32_t sizeLogAt;
 };
 static void relayTrace(struct GBASIORFU *rfu, const char *format, ...) {
     if (!rfu || !rfu->backend) return;
@@ -261,7 +282,7 @@ static void _gbaSendChildSlot(struct IOSRelay* broadcast, uint8_t* slot, size_t 
 // Once per emulated frame (the Switch's own ~59.7 Hz cadence): the next waiting child frame, or a repeat of the last idle
 // one, goes out against one credit.
 static void _gbaPumpChild(struct IOSRelay* broadcast) {
-	if (broadcast->piaCredits <= 0 || (uint16_t)(broadcast->piaReliable->outSeq-broadcast->piaReliable->windowLo) >= LDN_PIA_RELIABLE_MAX_INFLIGHT-4) {
+	if (broadcast->pendingKCount || broadcast->piaCredits <= 0 || (uint16_t)(broadcast->piaReliable->outSeq-broadcast->piaReliable->windowLo) >= LDN_PIA_RELIABLE_MAX_INFLIGHT-4) {
 		return;
 	}
 	uint8_t slot[PIA_OUT_BYTES];
@@ -287,7 +308,7 @@ static void _gbaPumpChild(struct IOSRelay* broadcast) {
 }
 
 // 57 4b 0c 00 <k_seq:u32><mid:u32><acked_host_ts:u32>, all LE - one per unique host 'T'.
-static void _gbaSendAck(struct IOSRelay* broadcast, uint32_t ackedTs) {
+static void _gbaQueueAck(struct IOSRelay* broadcast, uint32_t ackedTs) {
 	uint8_t frame[16] = {kGbaMarker, kGbaK, 12, 0};
 	uint32_t kSeq = ++broadcast->piaKSeq;
 	uint32_t mid = 1;
@@ -299,8 +320,26 @@ static void _gbaSendAck(struct IOSRelay* broadcast, uint32_t ackedTs) {
 	_reliableQueue(broadcast, frame, sizeof(frame));
 }
 
+/* K acknowledgements wait in order until there is a reliable-window slot.
+ * Child traffic yields to them. No successful host command is silently shed. */
+static void _gbaFlushAcks(struct IOSRelay *b) {
+    while (b->pendingKCount && b->piaReliable->localOpened &&
+           !b->piaReliable->unacked[b->piaReliable->outSeq % LDN_PIA_RELIABLE_MAX_INFLIGHT].used) {
+        _gbaQueueAck(b,b->pendingK[b->pendingKHead]);
+        b->pendingKHead=(b->pendingKHead+1)%256;b->pendingKCount--;
+    }
+}
+static void _gbaSendAck(struct IOSRelay *b,uint32_t ts) {
+    _gbaFlushAcks(b);
+    if(b->pendingKCount==256){b->failed=true;b->log(b->user,"Pending K acknowledgements full after sustained backpressure; reconnect required");return;}
+    b->pendingK[(b->pendingKHead+b->pendingKCount)%256]=ts;b->pendingKCount++;
+    _gbaFlushAcks(b);
+}
+
 // One delivered (in-order, non-stream-open) Reliable payload: zero or more frames back to back.
+static void _labHostReceive(struct IOSRelay *,const uint8_t *,size_t);
 static void _gbaReceive(struct IOSRelay* broadcast, const uint8_t* data, size_t length) {
+    if(broadcast->labHost){_labHostReceive(broadcast,data,length);return;}
 	while (length >= 4 && data[0] == kGbaMarker) {
 		uint8_t type = data[1];
 		size_t bodyLength = data[2] | ((size_t) data[3] << 8);
@@ -338,7 +377,7 @@ static void _gbaReceive(struct IOSRelay* broadcast, const uint8_t* data, size_t 
 					         slot[8], slot[17], slot[18], slot[19], slot[20], slot[21], slot[22]);
 					relayTrace(broadcast->rfu, "PIA    host cmd hdr=%02X%02X%02X %s", slot[0], slot[1], slot[2], words);
 				}
-				size_t preLength = LdnTradeShimHost(&broadcast->piaShim, slot, slotLength, broadcast->now, pre, sizeof(pre));
+				size_t preLength = broadcast->labMode?0:LdnTradeShimHost(&broadcast->piaShim, slot, slotLength, broadcast->now, pre, sizeof(pre));
 				for (size_t at = 0; at + LDN_TRADE_SHIM_HOST_FRAME <= preLength; at += LDN_TRADE_SHIM_HOST_FRAME) {
 					GBASIORFUDataReceived(broadcast->rfu, 0, &pre[at], LDN_TRADE_SHIM_HOST_FRAME);
 				}
@@ -358,6 +397,7 @@ static void _gbaReceive(struct IOSRelay* broadcast, const uint8_t* data, size_t 
 static bool _piaSendTiled(struct IOSRelay *broadcast, uint8_t *tiled, size_t tiledLength,
                           uint16_t dst, uint16_t src, bool establishing, bool footer, bool compress) {
     if (!broadcast->canSend(broadcast->user)) return false;
+	size_t rawLength = tiledLength;
 	bool compressed = false;
 	// The native client compresses any message body of 62 bytes or more (GB-Link's firmware does the same); the
 	// Switch decompresses by the flag, so this is for fidelity rather than correctness.
@@ -370,6 +410,7 @@ static bool _piaSendTiled(struct IOSRelay *broadcast, uint8_t *tiled, size_t til
 			compressed = true;
 		}
 	}
+	size_t packedLength = tiledLength;
 	if (footer) {
 		tiled[tiledLength++] = (uint8_t) (broadcast->piaHostVar >> 8);
 		tiled[tiledLength++] = (uint8_t) broadcast->piaHostVar;
@@ -398,7 +439,25 @@ static bool _piaSendTiled(struct IOSRelay *broadcast, uint8_t *tiled, size_t til
 		return false;
 	}
 	int rc = broadcast->send(broadcast->user, broadcast->piaHostIp, datagram, datagramLength) ? 0 : -1;
-	if (rc) broadcast->failed = true; else ++broadcast->transmitted;
+	/* Net discovery is broadcast by the native host. Keep the unicast copy
+	 * for delivery and add the identical discovery packet when capacity permits.
+	 * The optional copy must not fail a successfully queued unicast. */
+	if (!rc && broadcast->nativeHost && establishing && broadcast->canSend(broadcast->user)) {
+		if (broadcast->send(broadcast->user, broadcast->piaBroadcastIp, datagram, datagramLength)) {
+			++broadcast->transmitted;
+			broadcast->sizes.wire += datagramLength;
+		}
+	}
+	if (rc) broadcast->failed = true;
+    else {
+        ++broadcast->transmitted;
+        broadcast->sizes.raw += rawLength;
+        broadcast->sizes.packed += packedLength;
+        broadcast->sizes.wire += datagramLength;
+        broadcast->sizes.compressed += compressed;
+        unsigned bin=0;while(bin<5 && datagramLength>(size_t[]){64,96,128,192,256}[bin])++bin;
+        ++broadcast->sizes.txBins[bin];
+    }
 	relayTrace(broadcast->rfu, "PIA    tx dst=%04X src=%04X pktid=%04X flags=%02X footer=%u len=%zu rc=%d", header.dst, header.src,
 	               header.pktid, header.flags, header.footer, datagramLength, rc);
 	return rc == 0;
@@ -413,7 +472,7 @@ static bool _piaSendRaw(struct IOSRelay* b, uint8_t proto, uint16_t dst, uint16_
 }
 
 static void _reliablePump(struct IOSRelay *b) {
-    if (!b->piaOpenedStream || !b->canSend(b->user)) return;
+    if ((!b->piaOpenedStream && !(b->nativeHost && b->piaReliable->peerOpened)) || !b->canSend(b->user)) return;
     struct LdnPiaReliable *r=b->piaReliable;
     uint8_t tiled[kPiaMaxTiled],inner[8+LDN_PIA_RELIABLE_MAX_PAYLOAD];
     size_t used=0, selected[LDN_PIA_RELIABLE_MAX_INFLIGHT],count=0;
@@ -465,15 +524,47 @@ static void _reliablePump(struct IOSRelay *b) {
         if (!b->reliableUnsent[i]) ++r->unacked[i].resends;
         b->reliableUnsent[i]=false;r->unacked[i].lastTxMs=b->now;
     }
-    if (ack) {r->ackOwed=false;r->haveNextAckMs=haveOoo;if(haveOoo)r->nextAckMs=b->now+r->ackPeriodMs;}
+    if (ack) {
+        if(b->nativeHost && b->nativeConnectSeen && (uint16_t)(r->recvNext-b->nativeConnectNext)<0x8000)b->nativeConnectAcked=true;
+        r->ackOwed=false;r->haveNextAckMs=haveOoo;if(haveOoo)r->nextAckMs=b->now+r->ackPeriodMs;
+    }
 }
 
 static bool _piaSendMessage(struct IOSRelay* broadcast, const struct LdnPiaOutMessage* msg) {
 	return _piaSendRaw(broadcast, msg->proto, msg->dst, msg->src, msg->establishing, msg->footer, msg->compress, false, 0, msg->payload, msg->length);
 }
+/* Enqueue already translated native frames, including synthetic extra-barrier
+ * answers. Keeping this separate prevents translating their counters twice. */
+static void _queueLabData(struct IOSRelay *broadcast,const uint8_t *data,size_t length){
+    if(broadcast->nativeHost && broadcast->piaOutCount){
+        unsigned tail=(broadcast->piaOutHead+broadcast->piaOutCount-1)%64;
+        if(broadcast->piaOut[tail].length==length && !memcmp(broadcast->piaOut[tail].data,data,length)){
+            ++broadcast->nativeRfuCoalesced;return;
+        }
+    }
+    if(broadcast->piaOutCount==64){broadcast->failed=true;broadcast->log(broadcast->user,"Lab RFU queue overflow");return;}
+    unsigned at=(broadcast->piaOutHead+broadcast->piaOutCount++)%64;
+    if(broadcast->nativeHost && (unsigned)broadcast->piaOutCount>broadcast->nativeRfuQueuePeak)
+        broadcast->nativeRfuQueuePeak=broadcast->piaOutCount;
+    memcpy(broadcast->piaOut[at].data,data,length);broadcast->piaOut[at].length=length;
+}
 static void _sendData(struct GBASIORFUBackend* backend, const uint8_t* data, size_t length) {
-	struct IOSRelay* broadcast = (struct IOSRelay*) backend;
-
+    struct IOSRelay* broadcast = (struct IOSRelay*) backend;
+    if(broadcast->labMode){
+        if(!broadcast->piaAccepted || !length || length>RFU_PACKET_MAX)return;
+        uint8_t mapped[RFU_PACKET_MAX];memcpy(mapped,data,length);
+        if(broadcast->nativeHost){
+            unsigned before=broadcast->hostTrade.fakeCount;
+            if(!HostTradeParent(&broadcast->hostTrade,mapped,length)){
+                broadcast->failed=true;broadcast->log(broadcast->user,"Native trade synchronization failed: cannot map save barrier");return;
+            }
+            if(before!=broadcast->hostTrade.fakeCount){
+                char text[128];snprintf(text,sizeof(text),"Native trade: mapping Switch-only save barrier %u (trade %u)",
+                    broadcast->hostTrade.fake[before],broadcast->hostTrade.fakeCount);broadcast->log(broadcast->user,text);
+            }
+        }
+        _queueLabData(broadcast,mapped,length);return;
+    }
 	if (!broadcast->piaActive || !broadcast->piaOpenedStream) {
 		relayTrace(broadcast->rfu, "PIA    sendData %zu bytes DROPPED (active=%d opened=%d)", length, broadcast->piaActive, broadcast->piaOpenedStream);
 		return;
@@ -513,13 +604,20 @@ void IOSRelayStop(struct GBASIORFUBackend *backend) {
         if (b->notified) GBASIORFUDisconnected(b->rfu, 0);
         else GBASIORFUConnectResult(b->rfu, false, b->piaDeviceId, 0);
     }
+    if(b->labHost && b->piaAccepted && b->rfu)GBASIORFUDisconnected(b->rfu,0);
+    b->labConnectPending=false;
+    b->nativeAcceptPending=b->nativeConnectSeen=b->nativeConnectAcked=false;b->nativeConnectNext=0;
     b->piaActive = false;
     b->requested = b->notified = false;
     b->piaAccepted = b->piaOpenedStream = b->piaConnectQueued = false;
     b->piaOutCount = b->piaOutHead = b->piaCredits = 0;
+    b->nativeRfuCoalesced=b->nativeRfuQueuePeak=0;
+    b->nativeHeldFrames=0;
+    b->pendingKCount=b->pendingKHead=0;b->windowLogAt=0;
     b->piaHasIdle = false;
     b->piaLastQueuedLength = 0;
     LdnTradeShimReset(&b->piaShim);
+    memset(&b->hostTrade,0,sizeof(b->hostTrade));
 }
 static bool _init(struct GBASIORFUBackend *backend, struct GBASIORFU *rfu) {
     struct IOSRelay *b=(struct IOSRelay *)backend;
@@ -537,6 +635,7 @@ static void _reset(struct GBASIORFUBackend *backend) {
        but a reset during an active game connection requires leaving/rejoining LDN. */
     if (b->requested) { IOSRelayStop(backend); b->log(b->user, "Adapter reset: leave and rejoin the relay session"); }
     b->searching = false;
+    if(b->labHost){b->labAdvertising=false;if(b->piaActive)IOSRelayStop(backend);}
 }
 static void _searchStart(struct GBASIORFUBackend *backend) {
     struct IOSRelay *b = (struct IOSRelay *)backend;
@@ -557,14 +656,26 @@ static void _disconnect(struct GBASIORFUBackend *backend, unsigned mask) {
     struct IOSRelay *b = (struct IOSRelay *)backend;
     b->log(b->user, "Game disconnected; leave and rejoin LDN before another session");
 }
-static void _noop(struct GBASIORFUBackend *b) { (void)b; }
-static void _noopBroadcast(struct GBASIORFUBackend *b, const uint32_t words[6]) { (void)b; (void)words; }
 static void _hostStart(struct GBASIORFUBackend *backend, uint16_t id) {
-    (void)id; struct IOSRelay *b = (struct IOSRelay *)backend;
-    (void)b; // FRLG periodically advertises even in the overworld; no radio host is created.
+    struct IOSRelay *b = (struct IOSRelay *)backend;
+    if(b->nativeHostEnabled){b->nativeHost=true;b->labHost=b->labMode=true;}
+    if(b->labHost){if(!b->piaActive)LdnRandomBytes(b->labSSID,16);b->labDeviceId=id;b->labAdvertising=true;b->labNextSlot=0;}
+    // The Switch-join path never creates a host.
 }
-static void _noopReply(struct GBASIORFUBackend *b, uint16_t id, bool accept, unsigned slot) {
-    (void)b; (void)id; (void)accept; (void)slot;
+static void _labBroadcast(struct GBASIORFUBackend *backend,const uint32_t words[6]){
+    struct IOSRelay *b=(struct IOSRelay *)backend;memcpy(b->labWords,words,24);
+}
+static void _labHostStop(struct GBASIORFUBackend *backend){
+    struct IOSRelay *b=(struct IOSRelay *)backend;if(b->labHost){b->labAdvertising=false;b->labNextSlot=255;}
+}
+static void _noopReply(struct GBASIORFUBackend *backend, uint16_t id, bool accept, unsigned slot) {
+    struct IOSRelay *b=(struct IOSRelay *)backend;
+    if(!b->labHost || !b->labConnectPending || id!=b->labClientId)return;
+    b->labConnectPending=false;
+    if(!accept || slot!=0){uint8_t d[4]={0x57,'D',0,0};_reliableQueue(b,d,4);return;}
+    if(b->nativeHost){b->nativeAcceptPending=true;return;}
+    uint8_t a[10]={0x57,'A',6,0,0,0,(uint8_t)id,(uint8_t)(id>>8),0,0};
+    if(_reliableQueue(b,a,sizeof(a))){b->piaAccepted=true;b->labNextSlot=255;b->log(b->user,"Pia host accepted RFU child in slot 0");}
 }
 struct GBASIORFUBackend *IOSRelayCreate(IOSRelaySend send, IOSRelayCanSend canSend, IOSRelayLog log, void *user) {
     if (!send || !canSend || !log) return NULL;
@@ -574,7 +685,7 @@ struct GBASIORFUBackend *IOSRelayCreate(IOSRelaySend send, IOSRelayCanSend canSe
     b->send = send; b->canSend=canSend; b->log = log; b->user = user;
     LdnTradeShimInit(&b->piaShim, _shimLog, b);
     b->d = (struct GBASIORFUBackend){.init=_init,.deinit=_deinit,.reset=_reset,
-        .setBroadcast=_noopBroadcast,.hostStart=_hostStart,.hostStop=_noop,
+        .setBroadcast=_labBroadcast,.hostStart=_hostStart,.hostStop=_labHostStop,
         .connectReply=_noopReply,.searchStart=_searchStart,.searchStop=_searchStop,
         .connect=_connect,.disconnect=_disconnect,.sendData=_sendData};
     /* Tick is driven by the frontend even before the virtual RFU is powered on. */
@@ -610,6 +721,7 @@ bool IOSRelayConfigure(struct GBASIORFUBackend *backend, const uint8_t *p, size_
     }
     if (!host || !us || host==us || !b->rfu) return false;
     IOSRelayStop(backend);
+    b->labMode=false;b->labHost=false;b->nativeHost=false;
     b->beacon=beacon; b->now=b->started=b->lastReceive=now; b->lastBeacon=now-1000;
     memcpy(b->piaOurIp,p+4,4); memcpy(b->piaOurMac,us+4,6);
     memcpy(b->piaHostIp,host,4); memcpy(b->piaHostMac,host+4,6);
@@ -624,6 +736,7 @@ bool IOSRelayConfigure(struct GBASIORFUBackend *backend, const uint8_t *p, size_
     b->piaNonceCounter=((uint64_t)wall.tv_sec<<32)|(uint32_t)wall.tv_nsec;
     b->piaConnectId=(uint16_t)arc4random_uniform(65535)+1;
     b->piaTs=b->piaKSeq=0; b->received=b->decrypted=b->rejected=b->transmitted=0;
+    memset(&b->sizes,0,sizeof(b->sizes));b->sizeLogAt=b->now;
     b->failed=false; b->piaActive=true;
     b->log(b->user,"Native metadata accepted; waiting for an authenticated Pia packet");
     return true;
@@ -637,7 +750,10 @@ void IOSRelayReceive(struct GBASIORFUBackend *backend, const uint8_t ip[4], cons
         if (++b->rejected<=3) b->log(b->user,"Pia authentication failed: SSID/key/source metadata needs checking");
         return;
     }
-    if (!b->decrypted++) b->log(b->user,"First host Pia packet authenticated and decrypted");
+    if (!b->decrypted++) b->log(b->user,"First peer Pia packet authenticated and decrypted");
+    b->sizes.rxWire+=length;
+    unsigned sizeBin=0;while(sizeBin<5 && length>(size_t[]){64,96,128,192,256}[sizeBin])++sizeBin;
+    ++b->sizes.rxBins[sizeBin];
     b->lastReceive=b->now;
     if (!LdnPiaDecompress(plain,plainLength,decoded,&decodedLength)) return;
     struct LdnPiaMessage messages[64]; size_t consumed;
@@ -646,19 +762,55 @@ void IOSRelayReceive(struct GBASIORFUBackend *backend, const uint8_t ip[4], cons
     for (size_t i=0;i<count;++i) {
         struct LdnPiaMessage *m=&messages[i];
         if (m->proto != 3) relayTrace(b->rfu,"rx proto=%u length=%zu first=%02x",m->proto,m->payloadLength,m->payloadLength?m->payload[0]:0);
-        LdnPiaConnectOnMessage(&b->piaConn,m->proto,m->payload,m->payloadLength);
-        if (m->proto!=LDN_PIA_PROTO_RELIABLE || !b->piaOpenedStream) continue;
+        if(b->labHost){
+            unsigned previous=b->host.state;bool netAcked=b->host.netAcked;
+            if(b->nativeHost && m->proto==13 && m->payloadLength>=30 && !m->payload[0]){
+                struct LdnPiaHeader header;LdnPiaHeaderUnpack(data,&header);
+                if(header.src!=((unsigned)m->payload[28]<<8|m->payload[29])){b->log(b->user,"Host rejected mismatched Pia source identity");continue;}
+            }
+            if(!PiaHostReceive(&b->host,m->proto,m->payload,m->payloadLength)){
+                relayTrace(b->rfu,"host rejected proto=%u length=%zu subtype=%u",m->proto,m->payloadLength,m->payloadLength?m->payload[0]:255);continue;
+            }
+            b->piaHostVar=b->host.peerVar;
+            /* Reliable sends use piaConn, while Session sends use PiaHost.
+             * Keep both destinations synchronized with the authenticated join. */
+            b->piaConn.hostVar=b->host.peerVar;b->piaConn.haveHostVar=true;
+            if(!netAcked && b->host.netAcked)b->log(b->user,"Host Net probe acknowledged by peer");
+            if(previous!=b->host.state)b->log(b->user,b->host.state==2?"Host Pia session connected":"Host Pia session finalizing");
+            if(!b->nativeHost && m->proto==10 && b->host.state==2 && !b->piaOpenedStream){
+                uint16_t seq;
+                if(LdnPiaReliableOpen(b->piaReliable,kLdnPiaMetadataFrame,sizeof(kLdnPiaMetadataFrame),b->now,&seq)){
+                    b->piaOpenedStream=true;b->reliableUnsent[seq%128]=true;
+                }
+            }
+        }else LdnPiaConnectOnMessage(&b->piaConn,m->proto,m->payload,m->payloadLength);
+        if (m->proto!=LDN_PIA_PROTO_RELIABLE || (!b->piaOpenedStream && !(b->nativeHost && b->host.state==2))) continue;
         struct LdnPiaReliableFrame frame;
         if (!LdnPiaParseReliableFrame(m->payload,m->payloadLength,&frame)) continue;
         relayTrace(b->rfu,"rx reliable flags=%02x seq=%04x ack=%04x length=%zu",frame.flagsA,frame.seq,frame.ack,frame.payloadLength);
         struct LdnPiaReliableEntry delivered[128];
         size_t nd=LdnPiaReliableReceive(b->piaReliable,&frame,b->now,delivered,128);
         for (size_t d=0;d<nd;++d) {
+            if(b->nativeHost && !b->nativeConnectSeen && delivered[d].length==6 &&
+               delivered[d].payload[0]==kGbaMarker && delivered[d].payload[1]==kGbaC){
+                b->nativeConnectSeen=true;b->nativeConnectNext=(uint16_t)(delivered[d].seq+1);
+            }
             if (!(delivered[d].flagsA & LDN_PIA_FLAGSA_INITIALIZED) ||
                 (delivered[d].length && delivered[d].payload[0]==kGbaMarker))
                 _gbaReceive(b,delivered[d].payload,delivered[d].length);
         }
     }
+}
+static void _labTick(struct IOSRelay *,uint32_t);
+bool IOSRelayCanAdvanceFrame(struct GBASIORFUBackend *backend) {
+    struct IOSRelay *b=(struct IOSRelay *)backend;
+    /* Distinct game frames must not be dropped. Limit unsent work at its
+     * producer instead of letting a 60Hz emulator fill the 64-slot FIFO when
+     * reliable delivery is slower. Leave ample room for a single-frame burst. */
+    if(b && b->piaActive && b->nativeHost && b->piaAccepted && b->piaOutCount>=4){
+        ++b->nativeHeldFrames;return false;
+    }
+    return true;
 }
 void IOSRelayTick(struct GBASIORFUBackend *backend, uint32_t now) {
     struct IOSRelay *b=(struct IOSRelay *)backend;
@@ -668,6 +820,7 @@ void IOSRelayTick(struct GBASIORFUBackend *backend, uint32_t now) {
         b->log(b->user,"Relay session stopped: timeout or queue failure; leave and rejoin LDN");
         IOSRelayStop(backend); return;
     }
+    if(b->labMode){_labTick(b,now);return;}
     if (b->searching && now-b->lastBeacon>=500) {
         uint32_t words[6]; LdnBeaconToBroadcastWords(&b->beacon,0x13820002,4,words);
         GBASIORFUBroadcastReceived(b->rfu,b->beacon.trainerId,0,words); b->lastBeacon=now;
@@ -685,6 +838,23 @@ void IOSRelayTick(struct GBASIORFUBackend *backend, uint32_t now) {
             b->reliableUnsent[seq % LDN_PIA_RELIABLE_MAX_INFLIGHT]=true;
         }
     } else if (b->piaOpenedStream && !b->piaConnectQueued) _gbaSendConnect(b);
+    _gbaFlushAcks(b);
+    if (now-b->sizeLogAt>=5000) {
+        b->sizeLogAt=now;char sizeText[640];
+        snprintf(sizeText,sizeof(sizeText),
+            "PIA sizes cumulative: tx=%u compressed=%llu raw=%llu packed=%llu wire=%llu rx_authenticated=%u rx_wire=%llu bins_le=64,96,128,192,256,larger tx_bins=%u,%u,%u,%u,%u,%u rx_bins=%u,%u,%u,%u,%u,%u",
+            b->transmitted,(unsigned long long)b->sizes.compressed,(unsigned long long)b->sizes.raw,
+            (unsigned long long)b->sizes.packed,(unsigned long long)b->sizes.wire,b->decrypted,(unsigned long long)b->sizes.rxWire,
+            b->sizes.txBins[0],b->sizes.txBins[1],b->sizes.txBins[2],b->sizes.txBins[3],b->sizes.txBins[4],b->sizes.txBins[5],
+            b->sizes.rxBins[0],b->sizes.rxBins[1],b->sizes.rxBins[2],b->sizes.rxBins[3],b->sizes.rxBins[4],b->sizes.rxBins[5]);
+        b->log(b->user,sizeText);
+    }
+    if (b->piaOpenedStream && now-b->windowLogAt>=1000) {
+        b->windowLogAt=now;char text[160];
+        snprintf(text,sizeof(text),"Reliable window: occupied=%u/128 pending_K=%u child=%d",
+                 (unsigned)(uint16_t)(b->piaReliable->outSeq-b->piaReliable->windowLo),b->pendingKCount,b->piaOutCount);
+        b->log(b->user,text);
+    }
     if (b->piaAccepted) {
         LdnTradeShimPoll(&b->piaShim,now);
         uint8_t child[LDN_TRADE_SHIM_CHILD_FRAME], parent[LDN_TRADE_SHIM_HOST_FRAME];
@@ -701,3 +871,7 @@ void IOSRelayTick(struct GBASIORFUBackend *backend, uint32_t now) {
         if (!_piaSendMessage(b,&out)) break;
     }
 }
+
+#include "relay-lab.inc"
+
+#include "native-host.inc"

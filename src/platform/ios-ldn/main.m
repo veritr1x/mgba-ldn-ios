@@ -1,3 +1,4 @@
+#import "LRLog.h"
 /* Copyright (c) 2026 mGBA LDN iOS contributors. MPL-2.0. */
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -41,30 +42,47 @@ static void audioRate(struct mAVStream *s, unsigned rate) { if(rate) ((struct Au
 @property(nonatomic,strong) NSURL *romURL;
 @property(nonatomic,strong) NSURL *saveURL;
 @property(nonatomic,strong) NSURL *logURL;
+@property(nonatomic,strong) LRLog *logger;
+@property(nonatomic,strong) LRLog *captureLogger;
+@property(nonatomic,strong) NSURL *captureURL;
+@property(nonatomic) uint64_t captureSequence;
+@property(nonatomic) BOOL captureSession;
+- (void)capture:(NSDictionary *)event;
 - (void)record:(NSString *)text;
 @end
 static bool canSendPia(void *ctx) { return [((__bridge GameController *)ctx).relay canSendGameDatagram]; }
 static bool sendPia(void *ctx, const uint8_t ip[4], const uint8_t *p, size_t n) {
     GameController *g=(__bridge GameController *)ctx;
-    return [g.relay sendDatagram:[NSData dataWithBytes:p length:n] slot:0 address:[NSData dataWithBytes:ip length:4] port:12345]!=0;
+    NSData *data=[NSData dataWithBytes:p length:n],*address=[NSData dataWithBytes:ip length:4];
+    BOOL accepted=[g.relay sendDatagram:data slot:0 address:address port:12345]!=0;
+    [g capture:@{@"event":@"datagram",@"direction":@"tx",@"accepted":@(accepted),@"ip_b64":[address base64EncodedStringWithOptions:0],@"port":@12345,@"payload_b64":[data base64EncodedStringWithOptions:0],@"length":@(n)}];
+    return accepted;
 }
 static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ctx record:[NSString stringWithUTF8String:text]]; }
 
 @implementation GameController
 - (NSURL *)documents {
 #if TARGET_OS_MACCATALYST
-    NSURL *dir=[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"mGBA LDN"];
+    NSURL *dir=[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:[[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]?@"mGBA LDN Host Lab":@"mGBA LDN"];
     [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil]; return dir;
 #else
     return [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
 #endif
 }
+- (void)capture:(NSDictionary *)event {
+    if(!self.captureLogger)return;
+    struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
+    NSMutableDictionary *row=[event mutableCopy];row[@"seq"]=@(self.captureSequence++);
+    row[@"monotonic_ns"]=@((uint64_t)t.tv_sec*1000000000+(uint64_t)t.tv_nsec);row[@"emulated_frame"]=@(_frames);
+    NSData *json=[NSJSONSerialization dataWithJSONObject:row options:0 error:nil];
+    [self.captureLogger append:json ? [[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] stringByAppendingString:@"\n"] : @"CAPTURE ERROR\n"];
+}
 - (void)record:(NSString *)text {
-    if (![text hasPrefix:@"TRACE "]) self.status.text=text;
+    if ([text hasPrefix:@"TRACE "] && ![NSProcessInfo.processInfo.arguments containsObject:@"--trace-pia"]) return;
+    if (![text hasPrefix:@"TRACE "]) {self.status.text=text;[self capture:@{@"event":@"game_event",@"text":text}];}
     NSString *line=[NSString stringWithFormat:@"%@ %@\n",NSDate.date,text];
-    if(![NSFileManager.defaultManager fileExistsAtPath:self.logURL.path]) [[NSData data] writeToURL:self.logURL atomically:YES];
-    NSFileHandle *f=[NSFileHandle fileHandleForWritingToURL:self.logURL error:nil];
-    [f seekToEndOfFile]; [f writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [f closeFile];
+    if(!self.logger)self.logger=[[LRLog alloc] initWithURL:self.logURL];
+    [self.logger append:line];
     if (![text hasPrefix:@"TRACE "]) NSLog(@"mGBA LDN: %@",text);
 }
 - (UIButton *)actionButton:(NSString *)title selector:(SEL)action {
@@ -91,6 +109,13 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 - (void)viewDidLoad {
     [super viewDidLoad]; self.view.backgroundColor=UIColor.systemBackgroundColor;
     self.logURL=[[self documents] URLByAppendingPathComponent:@"game.log"];
+    if([NSProcessInfo.processInfo.arguments containsObject:@"--capture-trade"] ||
+       [[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayCaptureTrade"] boolValue]){
+        self.captureURL=[[self documents] URLByAppendingPathComponent:[NSString stringWithFormat:@"trade-capture-%@.jsonl",NSUUID.UUID.UUIDString]];
+        self.captureLogger=[[LRLog alloc] initWithURL:self.captureURL];
+        [self capture:@{@"event":@"capture_start",@"schema":@1,@"clock_scope":@"App callback boundaries, not radio timestamps",@"transport":[NSBundle.mainBundle objectForInfoDictionaryKey:@"LDNRelayTransport"]?:@"ble"}];
+        NSLog(@"Trade capture: %@",self.captureURL.path);
+    }
     self.titleLabel=[UILabel new]; self.titleLabel.text=@"mGBA · LDN"; self.titleLabel.font=[UIFont boldSystemFontOfSize:24]; self.titleLabel.numberOfLines=2;
     self.status=[UILabel new]; self.status.numberOfLines=0; self.status.font=[UIFont systemFontOfSize:13]; self.status.textColor=UIColor.secondaryLabelColor;
     self.screen=[UIImageView new]; self.screen.backgroundColor=UIColor.blackColor; self.screen.contentMode=UIViewContentModeScaleAspectFit;
@@ -127,6 +152,14 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(datagram:) name:@"LDNRelayDatagram" object:self.relay];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(inactive:) name:UIApplicationWillResignActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(active:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(hostMembers:) name:@"LDNHostMembers" object:self.relay];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(labAdvertisement:) name:@"LDNLabAdvertisement" object:self.relay];
+    __weak GameController *weakGame=self;
+    self.relay.labAdvertisementProvider=^NSData *{
+        GameController *g=weakGame;if(!g || !g->_backend)return nil;
+        uint8_t m[IOS_LAB_METADATA_SIZE];return IOSRelayLabAdvertisement(g->_backend,m)?[NSData dataWithBytes:m length:sizeof(m)]:nil;
+    };
+    self.relay.nativeAdvertisementProvider=^NSData *{GameController *g=weakGame;if(!g || !g->_backend || g->_paused)return nil;uint8_t ad[122];return IOSRelayNativeAdvertisement(g->_backend,ad)?[NSData dataWithBytes:ad length:122]:nil;};
     [self startAudio];
     self.display=[CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
     self.display.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);
@@ -161,8 +194,8 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     for(UIPress *p in presses) { int bit=[self bitForPress:p];if(bit>=0)_keys&=~(1u<<bit);else [super pressesEnded:[NSSet setWithObject:p] withEvent:event]; }
 }
 - (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { _keys=0; }
-- (void)keyDown:(UIButton *)b { _keys|=1u<<b.tag; }
-- (void)keyUp:(UIButton *)b { _keys&=~(1u<<b.tag); }
+- (void)keyDown:(UIButton *)b { _keys|=1u<<b.tag;[self capture:@{@"event":@"input",@"keys":@(_keys)}]; }
+- (void)keyUp:(UIButton *)b { _keys&=~(1u<<b.tag);[self capture:@{@"event":@"input",@"keys":@(_keys)}]; }
 - (void)startAudio {
     NSError *error=nil;
     [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:0 error:&error];
@@ -243,8 +276,10 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     _core->reset(_core);
     _backend=IOSRelayCreate(sendPia,canSendPia,logPia,(__bridge void *)self);
     if(!_backend) { [self unload];return NO; }
+    IOSRelayEnableNativeHost(_backend,![[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
+    IOSRelaySetLabHost(_backend,[[NSBundle.mainBundle objectForInfoDictionaryKey:@"MGBALabHost"] boolValue]);
     GBASIORFUCreate(&_rfu,_backend);
-    NSURL *trace=[[self documents] URLByAppendingPathComponent:@"rfu.log"];
+    NSURL *trace=self.captureURL?[[self.captureURL URLByDeletingPathExtension] URLByAppendingPathExtension:@"rfu.log"]:[[self documents] URLByAppendingPathComponent:@"rfu.log"];
     if([NSProcessInfo.processInfo.arguments containsObject:@"--trace-rfu"]) GBASIORFUSetTraceFile(&_rfu,trace.fileSystemRepresentation);
     _core->setPeripheral(_core,mPERIPH_GBA_LINK_PORT,&_rfu.d);_attached=YES;
     _stream.rate=_core->audioSampleRate(_core);_phase=_sumL=_sumR=0;_samples=0;
@@ -264,7 +299,13 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
     BOOL rendered=NO;
     while(_accumulator>=frameTime) {
         _accumulator-=frameTime;
-        IOSRelayTick(_backend,monotonicMs());_core->setKeys(_core,_keys);_core->runFrame(_core);
+        IOSRelayTick(_backend,monotonicMs());
+        if(!IOSRelayCanAdvanceFrame(_backend)) {
+            /* Continue protocol service next display tick. Do not accumulate
+             * catch-up frames while the peer is applying backpressure. */
+            _accumulator=0;break;
+        }
+        _core->setKeys(_core,_keys);_core->runFrame(_core);
         [self drainAudio];++_frames;rendered=YES;
         if(_frames%600==0) [self save];
     }
@@ -300,16 +341,23 @@ static void logPia(void *ctx, const char *text) { [(__bridge GameController *)ct
 - (void)active:(NSNotification *)note { /* User resumes explicitly; never silently resume a stale multiplayer session. */ }
 - (void)bound:(NSNotification *)note {
     NSData *metadata=note.userInfo[@"metadata"];
-    if(!_core || _paused || !IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs())) {
+    if(self.captureLogger){
+        if(self.captureSession){[self capture:@{@"event":@"session_end",@"trade_success":@"unverified"}];self.captureSession=NO;}
+        NSData *rom=[NSData dataWithContentsOfURL:self.romURL],*save=[NSData dataWithContentsOfURL:self.saveURL];uint8_t digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(rom.bytes,(CC_LONG)rom.length,digest);NSMutableString *hash=[NSMutableString new];for(unsigned i=0;i<sizeof(digest);i++)[hash appendFormat:@"%02x",digest[i]];
+        [self capture:@{@"event":@"session_start",@"metadata_b64":[metadata base64EncodedStringWithOptions:0]?:@"",@"rom_sha256":hash,@"save_b64":[save base64EncodedStringWithOptions:0]?:@"",@"save_scope":@"Last persisted save; not an emulator savestate"}];self.captureSession=YES;
+    }
+    if(!_core || _paused || !( [note.userInfo[@"lab"] boolValue]?IOSRelayConfigureLab(_backend,metadata.bytes,metadata.length,[note.userInfo[@"host"] boolValue],monotonicMs()):[note.userInfo[@"nativeHost"] boolValue]?IOSRelayConfigureNativeHost(_backend,metadata.bytes,metadata.length,monotonicMs()):IOSRelayConfigure(_backend,metadata.bytes,metadata.length,monotonicMs()))) {
         [self record:@"Load and resume FireRed before joining. Relay metadata must describe an FRLG host."];
         [self.relay leave];
     }
 }
-- (void)lost:(NSNotification *)note { IOSRelayStop(_backend); }
+- (void)hostMembers:(NSNotification *)note {NSData *m=note.userInfo[@"metadata"];if(_backend && !IOSRelayConfigureNativeHost(_backend,m.bytes,m.length,monotonicMs())){[self record:@"Native host peer metadata rejected; leaving room."];[self.relay leave];}}
+- (void)labAdvertisement:(NSNotification *)note {NSData *m=note.userInfo[@"metadata"];if(_backend)IOSRelayUpdateLabAdvertisement(_backend,m.bytes,m.length);}
+- (void)lost:(NSNotification *)note { IOSRelayStop(_backend);if(self.captureSession){[self capture:@{@"event":@"session_end",@"trade_success":@"unverified"}];self.captureSession=NO;[self.captureLogger flushSynchronously];} }
 - (void)datagram:(NSNotification *)note {
     if(!_backend || _paused || [note.userInfo[@"slot"] unsignedIntValue]!=0 || [note.userInfo[@"port"] unsignedIntValue]!=12345) return;
     NSData *ip=note.userInfo[@"source"],*data=note.userInfo[@"payload"];
-    if(ip.length==4) IOSRelayReceive(_backend,ip.bytes,data.bytes,data.length);
+    if(ip.length==4){[self capture:@{@"event":@"datagram",@"direction":@"rx",@"ip_b64":[ip base64EncodedStringWithOptions:0],@"port":@12345,@"payload_b64":[data base64EncodedStringWithOptions:0],@"length":@(data.length)}];IOSRelayReceive(_backend,ip.bytes,data.bytes,data.length);}
 }
 - (void)pickerForSave:(BOOL)save {
     if(self.relay.joined) { [self record:@"Leave the relay session before importing files."];return; }

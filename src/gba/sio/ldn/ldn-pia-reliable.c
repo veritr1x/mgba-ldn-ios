@@ -286,6 +286,11 @@ size_t LdnPiaReliableReceive(struct LdnPiaReliable* link, const struct LdnPiaRel
 		}
 		return 0;
 	}
+    /* Reject outside the receive window before changing ACK or stream state.
+     * Otherwise seq % 128 can overwrite an already selectively ACKed slot. */
+    if (frame->payloadLength > LDN_PIA_RELIABLE_MAX_PAYLOAD ||
+        (_seqLt(link->recvNext, frame->seq) && (uint16_t)(frame->seq-link->recvNext) >= LDN_PIA_RELIABLE_MAX_INFLIGHT) ||
+        (frame->seq == link->recvNext && !maxEntries)) return 0;
 	if (!link->peerOpened && frame->seq == LDN_PIA_RELIABLE_START_SEQ && !(frame->flagsA & LDN_PIA_FLAGSA_INITIALIZED)) {
 		// The opening slot must carry Initialized; a plain frame there is not a valid stream start.
 		return 0;
